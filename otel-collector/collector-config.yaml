@@ -1,0 +1,76 @@
+receivers:
+  sqlquery:
+    driver: oracle
+    datasource: "oracle://otel_monitor:YourSecurePassword123@oracle-db:1521/freepdb1"
+    collection_interval: 30s
+    queries:
+      - sql: |
+          SELECT
+            NVL(s.service_name, 'unknown')           AS SERVICE_NAME,
+            NVL(q.sql_id, 'unknown')                AS SQL_ID,
+            NVL(q.plan_hash_value, 0)               AS PLAN_HASH_VALUE,
+            NVL(q.operation, 'unknown')             AS OPERATION,
+            NVL(q.object_name, 'unknown')           AS OBJECT_NAME,
+            NVL(q.cost, 0)                          AS COST,
+            NVL(q.io_cost, 0)                       AS IO_COST,
+            TRUNC(sql.elapsed_time / 1000000)       AS EXECUTION_TIME_SECONDS
+          FROM 
+            v$sql_plan q
+            JOIN v$session s ON s.sql_id = q.sql_id
+            JOIN v$sql sql ON sql.sql_id = q.sql_id
+          WHERE 
+            s.status = 'ACTIVE'
+            AND s.type = 'USER'
+            AND sql.elapsed_time > 1000000
+
+        metrics:
+          - metric_name: oracle.explain_plan.execution_time
+            value_column: EXECUTION_TIME_SECONDS
+            data_type: gauge
+            attribute_columns:
+              - SERVICE_NAME
+              - SQL_ID
+              - PLAN_HASH_VALUE
+              - OPERATION
+              - OBJECT_NAME
+
+          - metric_name: oracle.explain_plan.cost
+            value_column: COST
+            data_type: gauge
+            attribute_columns:
+              - SQL_ID
+              - PLAN_HASH_VALUE
+              - OPERATION
+              - OBJECT_NAME
+
+          - metric_name: oracle.explain_plan.io_cost
+            value_column: IO_COST
+            data_type: gauge
+            attribute_columns:
+              - SQL_ID
+              - PLAN_HASH_VALUE
+              - OPERATION
+              - OBJECT_NAME
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 10
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+  otlphttp/observe:
+    endpoint: "https://<OBSERVE_TENANT>.collect.observe-eng.com/v2/otel"
+    headers:
+      authorization: "Bearer <OBSERVE_TOKEN>"
+
+service:
+  telemetry:
+    logs:
+      level: debug
+  pipelines:
+    metrics:
+      receivers: [sqlquery]
+      processors: [batch]
+      exporters: [prometheus, otlphttp/observe]

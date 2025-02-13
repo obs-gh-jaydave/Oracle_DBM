@@ -1,0 +1,41 @@
+services:
+  oracle-db:
+    image: gvenzl/oracle-xe:latest
+    container_name: oracle-db
+    environment:
+      - ORACLE_PASSWORD=YourSecurePassword123  
+    ports:
+      - "1521:1521"
+    volumes:
+      - ./oracle/setup.sql:/container-entrypoint-initdb.d/00_setup.sql
+      - ./oracle/create-schema.sql:/container-entrypoint-initdb.d/01_create-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/YourSecurePassword123@localhost:1521/XEPDB1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+
+  otel-collector:
+    build: ./otel-collector
+    container_name: otel-collector
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "9464:9464"
+
+  oracle-loadgen:
+    build: ./loadgen
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+    environment:
+      ORACLE_HOST: oracle-db
+      ORACLE_PORT: "1521"
+      ORACLE_SID: "XEPDB1"
+      ORACLE_USER: testuser
+      ORACLE_PASSWORD: testpass
