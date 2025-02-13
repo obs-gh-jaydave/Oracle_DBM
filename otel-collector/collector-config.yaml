@@ -4,16 +4,17 @@ receivers:
     datasource: "oracle://otel_monitor:YourSecurePassword123@oracle-db:1521/freepdb1"
     collection_interval: 30s
     queries:
+      # 1) SQL Plan Metrics
       - sql: |
           SELECT
-            NVL(s.service_name, 'unknown')           AS SERVICE_NAME,
-            NVL(q.sql_id, 'unknown')                AS SQL_ID,
-            NVL(q.plan_hash_value, 0)               AS PLAN_HASH_VALUE,
-            NVL(q.operation, 'unknown')             AS OPERATION,
-            NVL(q.object_name, 'unknown')           AS OBJECT_NAME,
-            NVL(q.cost, 0)                          AS COST,
-            NVL(q.io_cost, 0)                       AS IO_COST,
-            TRUNC(sql.elapsed_time / 1000000)       AS EXECUTION_TIME_SECONDS
+            NVL(s.service_name, 'unknown') AS SERVICE_NAME,
+            NVL(q.sql_id, 'unknown') AS SQL_ID,
+            NVL(q.plan_hash_value, 0) AS PLAN_HASH_VALUE,
+            NVL(q.operation, 'unknown') AS OPERATION,
+            NVL(q.object_name, 'unknown') AS OBJECT_NAME,
+            NVL(q.cost, 0) AS COST,
+            NVL(q.io_cost, 0) AS IO_COST,
+            TRUNC(sql.elapsed_time / 1000000) AS EXECUTION_TIME_SECONDS
           FROM 
             v$sql_plan q
             JOIN v$session s ON s.sql_id = q.sql_id
@@ -22,35 +23,117 @@ receivers:
             s.status = 'ACTIVE'
             AND s.type = 'USER'
             AND sql.elapsed_time > 1000000
-
         metrics:
           - metric_name: oracle.explain_plan.execution_time
             value_column: EXECUTION_TIME_SECONDS
             data_type: gauge
+            value_type: int
             attribute_columns:
               - SERVICE_NAME
               - SQL_ID
               - PLAN_HASH_VALUE
               - OPERATION
               - OBJECT_NAME
-
           - metric_name: oracle.explain_plan.cost
             value_column: COST
             data_type: gauge
+            value_type: int
+            attribute_columns:
+              - SQL_ID
+              - PLAN_HASH_VALUE
+              - OPERATION
+              - OBJECT_NAME
+          - metric_name: oracle.explain_plan.io_cost
+            value_column: IO_COST
+            data_type: gauge
+            value_type: int
             attribute_columns:
               - SQL_ID
               - PLAN_HASH_VALUE
               - OPERATION
               - OBJECT_NAME
 
-          - metric_name: oracle.explain_plan.io_cost
-            value_column: IO_COST
+      # 2) SQL Execution Monitoring
+      - sql: |
+          SELECT
+            sql_id AS SQL_ID,
+            sql_exec_id AS EXEC_ID,
+            sql_plan_hash_value AS PLAN_HASH_VALUE,
+            status AS STATUS,
+            username AS USERNAME,
+            module AS MODULE,
+            CAST(TRUNC(elapsed_time/1000000) AS NUMBER(10,0)) AS ELAPSED_TIME_SECONDS,
+            CAST(TRUNC(cpu_time/1000000) AS NUMBER(10,0)) AS CPU_TIME_SECONDS,
+            buffer_gets AS BUFFER_GETS,
+            disk_reads AS DISK_READS,
+            direct_writes AS DIRECT_WRITES,
+            CAST(TRUNC(physical_read_bytes/1024/1024) AS NUMBER(10,0)) AS PHYSICAL_READ_MB,
+            CAST(TRUNC(physical_write_bytes/1024/1024) AS NUMBER(10,0)) AS PHYSICAL_WRITE_MB
+          FROM v$sql_monitor
+          WHERE status = 'EXECUTING'
+        metrics:
+          - metric_name: oracle.sql.elapsed_time
+            value_column: ELAPSED_TIME_SECONDS
             data_type: gauge
-            attribute_columns:
-              - SQL_ID
-              - PLAN_HASH_VALUE
-              - OPERATION
-              - OBJECT_NAME
+            value_type: int
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+          - metric_name: oracle.sql.cpu_time
+            value_column: CPU_TIME_SECONDS
+            data_type: gauge
+            value_type: int
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+          - metric_name: oracle.sql.buffer_gets
+            value_column: BUFFER_GETS
+            data_type: gauge
+            value_type: int
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+          - metric_name: oracle.sql.disk_reads
+            value_column: DISK_READS
+            data_type: gauge
+            value_type: int
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+          - metric_name: oracle.sql.direct_writes
+            value_column: DIRECT_WRITES
+            data_type: gauge
+            value_type: int
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+          - metric_name: oracle.sql.physical_read_mb
+            value_column: PHYSICAL_READ_MB
+            data_type: gauge
+            value_type: int
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+          - metric_name: oracle.sql.physical_write_mb
+            value_column: PHYSICAL_WRITE_MB
+            data_type: gauge
+            value_type: int
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+
+      # 3) Explain Plan Text
+      - sql: |
+          WITH PLAN_TABLE AS (
+            SELECT 
+              ses.sql_id,
+              LISTAGG(
+                operation || ' ' || 
+                CASE WHEN options IS NOT NULL THEN '(' || options || ') ' END ||
+                CASE WHEN object_name IS NOT NULL THEN 'ON ' || object_name END,
+                ' -> '
+              ) WITHIN GROUP (ORDER BY id) AS plan_text
+            FROM v$sql_plan pln
+            JOIN v$session ses ON ses.sql_id = pln.sql_id
+            WHERE ses.status = 'ACTIVE'
+              AND ses.type = 'USER'
+              AND ses.sql_id IS NOT NULL
+            GROUP BY ses.sql_id
+          )
+          SELECT 
+            sql_id AS SQL_ID,
+            'explain_plan' AS LOG_TYPE,
+            plan_text AS PLAN_TEXT
+          FROM PLAN_TABLE
+        logs:
+          - body_column: PLAN_TEXT
+            attribute_columns: [SQL_ID, LOG_TYPE]
 
 processors:
   batch:
@@ -58,6 +141,8 @@ processors:
     send_batch_size: 10
 
 exporters:
+  debug:
+    verbosity: detailed
   prometheus:
     endpoint: "0.0.0.0:9464"
   otlphttp/observe:
@@ -74,3 +159,7 @@ service:
       receivers: [sqlquery]
       processors: [batch]
       exporters: [prometheus, otlphttp/observe]
+    logs:
+      receivers: [sqlquery]
+      processors: [batch]
+      exporters: [debug, otlphttp/observe]

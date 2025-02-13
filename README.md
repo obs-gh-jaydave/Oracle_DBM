@@ -1,3 +1,7 @@
+# About
+
+When running locally, it will take some time for everything to launch and work. 
+
 ## Prerequisites for Running on Apple Silicon
 
 If you're using Apple Silicon, follow these steps:
@@ -19,3 +23,4 @@ If you're using Apple Silicon, follow these steps:
    ```
 
 These steps ensure compatibility and proper setup for running the application on Apple Silicon machines.
+
