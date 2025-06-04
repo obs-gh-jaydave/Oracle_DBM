@@ -1,57 +1,58 @@
 receivers:
+  # OTLP receiver for APM traces from applications
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://localhost:8080"
+            - "http://localhost:8081"
+            - "http://localhost:8000"
+          allowed_headers:
+            - "*"
+
+  # Host metrics for testing Observe connectivity
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+  
   sqlquery:
     driver: oracle
-    datasource: "oracle://otel_monitor:YourSecurePassword123@oracle-db:1521/freepdb1"
+    datasource: "oracle://otel_monitor:${ORACLE_PASSWORD}@oracle-db:1521/XEPDB1"
     collection_interval: 30s
     queries:
-      # 1) SQL Plan Metrics
+      # 1) Recent SQL Queries (captures API calls) 
       - sql: |
           SELECT
-            NVL(s.service_name, 'unknown') AS SERVICE_NAME,
-            NVL(q.sql_id, 'unknown') AS SQL_ID,
-            NVL(q.plan_hash_value, 0) AS PLAN_HASH_VALUE,
-            NVL(q.operation, 'unknown') AS OPERATION,
-            NVL(q.object_name, 'unknown') AS OBJECT_NAME,
-            NVL(q.cost, 0) AS COST,
-            NVL(q.io_cost, 0) AS IO_COST,
-            TRUNC(sql.elapsed_time / 1000000) AS EXECUTION_TIME_SECONDS
-          FROM 
-            v$sql_plan q
-            JOIN v$session s ON s.sql_id = q.sql_id
-            JOIN v$sql sql ON sql.sql_id = q.sql_id
-          WHERE 
-            s.status = 'ACTIVE'
-            AND s.type = 'USER'
-            AND sql.elapsed_time > 1000000
+            NVL(sql.sql_id, 'unknown') AS SQL_ID,
+            NVL(sql.plan_hash_value, 0) AS PLAN_HASH_VALUE,
+            NVL(sql.parsing_schema_name, 'unknown') AS SCHEMA_NAME,
+            'recent_sql' AS LOG_TYPE,
+            TRUNC(sql.elapsed_time / 1000000) AS EXECUTION_TIME_SECONDS,
+            sql.executions AS EXECUTION_COUNT,
+            TRUNC(sql.last_active_time) AS LAST_ACTIVE_TIME,
+            SUBSTR(sql.sql_text, 1, 100) AS SQL_TEXT_PREVIEW,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'CORRELATION_ID=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'USER_ACTION=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION
+          FROM v$sql sql
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '2' MINUTE
+            AND sql.parsing_schema_name IN ('TESTUSER', 'SYS')
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.executions > 0
         metrics:
-          - metric_name: oracle.explain_plan.execution_time
+          - metric_name: oracle.sql.execution_time
             value_column: EXECUTION_TIME_SECONDS
             data_type: gauge
             value_type: int
-            attribute_columns:
-              - SERVICE_NAME
-              - SQL_ID
-              - PLAN_HASH_VALUE
-              - OPERATION
-              - OBJECT_NAME
-          - metric_name: oracle.explain_plan.cost
-            value_column: COST
-            data_type: gauge
-            value_type: int
-            attribute_columns:
-              - SQL_ID
-              - PLAN_HASH_VALUE
-              - OPERATION
-              - OBJECT_NAME
-          - metric_name: oracle.explain_plan.io_cost
-            value_column: IO_COST
-            data_type: gauge
-            value_type: int
-            attribute_columns:
-              - SQL_ID
-              - PLAN_HASH_VALUE
-              - OPERATION
-              - OBJECT_NAME
+            attribute_columns: [SQL_ID, PLAN_HASH_VALUE, SCHEMA_NAME, EXECUTION_COUNT]
+        logs:
+          - body_column: SQL_TEXT_PREVIEW
+            attribute_columns: [SQL_ID, SCHEMA_NAME, LOG_TYPE, EXECUTION_COUNT, EXECUTION_TIME_SECONDS, PLAN_HASH_VALUE, CORRELATION_ID, USER_ACTION]
 
       # 2) SQL Execution Monitoring
       - sql: |
@@ -108,29 +109,46 @@ receivers:
             value_type: int
             attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
 
-      # 3) Explain Plan Text
+      # 3) Recent SQL Statements with Correlation ID extraction
       - sql: |
-          WITH PLAN_TABLE AS (
-            SELECT 
-              ses.sql_id,
-              LISTAGG(
-                operation || ' ' || 
-                CASE WHEN options IS NOT NULL THEN '(' || options || ') ' END ||
-                CASE WHEN object_name IS NOT NULL THEN 'ON ' || object_name END,
-                ' -> '
-              ) WITHIN GROUP (ORDER BY id) AS plan_text
-            FROM v$sql_plan pln
-            JOIN v$session ses ON ses.sql_id = pln.sql_id
-            WHERE ses.status = 'ACTIVE'
-              AND ses.type = 'USER'
-              AND ses.sql_id IS NOT NULL
-            GROUP BY ses.sql_id
-          )
           SELECT 
-            sql_id AS SQL_ID,
+            sql.sql_id AS SQL_ID,
+            sql.parsing_schema_name AS SCHEMA_NAME,
+            'recent_sql' AS LOG_TYPE,
+            sql.sql_text AS SQL_TEXT,
+            TRUNC(sql.last_active_time) AS LAST_ACTIVE_TIME,
+            sql.executions AS EXECUTION_COUNT,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'CORRELATION_ID=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'USER_ACTION=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION
+          FROM v$sql sql
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '2' MINUTE
+            AND sql.parsing_schema_name IN ('TESTUSER', 'SYS') 
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.executions > 0
+            AND ROWNUM <= 50
+          ORDER BY sql.last_active_time DESC
+        logs:
+          - body_column: SQL_TEXT
+            attribute_columns: [SQL_ID, SCHEMA_NAME, LOG_TYPE, EXECUTION_COUNT, CORRELATION_ID, USER_ACTION]
+            
+      # 4) Explain Plan Text  
+      - sql: |
+          SELECT 
+            sql.sql_id AS SQL_ID,
             'explain_plan' AS LOG_TYPE,
-            plan_text AS PLAN_TEXT
-          FROM PLAN_TABLE
+            LISTAGG(
+              pln.operation || ' ' || 
+              CASE WHEN pln.options IS NOT NULL THEN '(' || pln.options || ') ' END ||
+              CASE WHEN pln.object_name IS NOT NULL THEN 'ON ' || pln.object_name END,
+              ' -> '
+            ) WITHIN GROUP (ORDER BY pln.id) AS PLAN_TEXT
+          FROM v$sql sql
+          JOIN v$sql_plan pln ON sql.sql_id = pln.sql_id
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '2' MINUTE
+            AND sql.parsing_schema_name IN ('TESTUSER', 'SYS')
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND ROWNUM <= 20
+          GROUP BY sql.sql_id
         logs:
           - body_column: PLAN_TEXT
             attribute_columns: [SQL_ID, LOG_TYPE]
@@ -146,17 +164,22 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:9464"
   otlphttp/observe:
-    endpoint: "https://<OBSERVE_TENANT>.collect.observe-eng.com/v2/otel"
+    endpoint: "https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v2/otel"
     headers:
-      authorization: "Bearer <OBSERVE_TOKEN>"
+      authorization: "Bearer ${OBSERVE_BACKEND_BEARER_TOKEN}"
+    compression: gzip
 
 service:
   telemetry:
     logs:
       level: debug
   pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, otlphttp/observe]
     metrics:
-      receivers: [sqlquery]
+      receivers: [hostmetrics, sqlquery]
       processors: [batch]
       exporters: [prometheus, otlphttp/observe]
     logs:
