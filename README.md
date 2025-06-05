@@ -20,19 +20,21 @@ This demo showcases comprehensive **end-to-end observability** for Oracle databa
 
 ## End-to-End Correlation Flow
 
-This demo implements complete correlation tracking across all layers:
+This demo implements complete **OpenTelemetry-native correlation tracking** across all layers:
 
-1. **Frontend Click** → Generates correlation ID (`obs-{timestamp}-{random}`)
-2. **RUM Transaction** → Tagged with correlation ID in custom labels and context
-3. **API Request** → Correlation ID passed via headers (`X-Correlation-ID`)
-4. **API Span** → Enriched with correlation attributes in OpenTelemetry traces
-5. **Database Query** → Correlation ID embedded in SQL comments for tracking
-6. **OTEL Logs** → Correlation data extracted and captured for analysis in Observe
+1. **Frontend Click** → RUM SDK generates OpenTelemetry trace context automatically
+2. **RUM Transaction** → Creates APM trace with correlation ID and custom labels
+3. **API Request** → Receives trace context via distributed tracing headers (no manual headers needed)
+4. **API Span** → Extracts correlation from OpenTelemetry trace/span IDs
+5. **Database Query** → Embeds full OpenTelemetry context + correlation in SQL comments
+6. **OTEL Collector** → Extracts real APM trace/span IDs and correlation from SQL text
+7. **Observe** → Complete APM trace linking frontend → API → database operations
 
 ### Correlation ID Format
-- **Pattern**: `obs-{timestamp}-{randomString}`
-- **Example**: `obs-1703875200000-abc123def`
-- **Visibility**: Available in frontend RUM, API spans, and database logs
+- **Pattern**: `rum-{trace_id_12_chars}-{span_id_8_chars}`
+- **Example**: `rum-498f7f4d8c70-3fc5f9b6`
+- **Full APM Context**: Includes 32-char OpenTelemetry trace ID and 16-char span ID
+- **Visibility**: Available in frontend RUM, API spans, and database explain plans with full APM correlation
 
 ## Quick Start
 
@@ -185,26 +187,34 @@ Key configuration variables:
 
 ## What Gets Monitored
 
-### Database Observability
-- **SQL Execution Metrics**: Execution times, costs, and performance data
-- **Explain Plans**: Query execution plans with operation details
-- **Correlation Tracking**: SQL queries enriched with correlation IDs from frontend interactions
-- **Real-time Monitoring**: Buffer gets, disk reads, and I/O metrics
+### Database Observability (Datadog DBM-style)
+- **SQL Execution Metrics**: Real-time execution times, CPU usage, I/O metrics with APM correlation
+- **Explain Plans**: Query execution plans with full OpenTelemetry trace/span IDs
+- **Oracle-Native Correlation**: Uses `DBMS_SESSION.SET_IDENTIFIER` and `CLIENT_INFO` for production-ready correlation
+- **Performance Monitoring**: Buffer cache hit ratios, library cache metrics, shared pool statistics
+- **SQL Comment Extraction**: Correlation data embedded in SQL text for reliable tracking
 - **Log Types**: 
-  - `recent_sql`: SQL statements with embedded correlation IDs
-  - `explain_plan`: Query execution plans linked by SQL_ID
+  - `recent_sql_execution`: SQL statements with APM trace/span IDs and correlation
+  - `execution_plan_with_correlation`: Query execution plans linked to APM traces
+  - `oracle_session_correlation`: Session-level correlation data from Oracle context
+  - `oracle_performance`: Database performance metrics with correlation context
 
-### Frontend Observability
-- **User Interaction Tracking**: Page loads, clicks, and user journey correlation
-- **API Call Correlation**: HTTP requests tagged with correlation IDs for end-to-end tracing
-- **Performance Monitoring**: Load times, response times, and user experience metrics
-- **Error Tracking**: JavaScript errors and exceptions with context
-- **Custom Context**: Correlation IDs in RUM transaction labels and custom fields
+### Frontend Observability (Observe RUM)
+- **OpenTelemetry Integration**: Elastic APM RUM SDK with automatic trace context generation
+- **Distributed Tracing**: Automatic propagation of trace context to API calls
+- **User Journey Tracking**: Complete user interaction correlation with APM traces
+- **Performance Monitoring**: Real User Monitoring with Core Web Vitals and response times
+- **Error Tracking**: JavaScript errors and exceptions with full trace context
+- **Custom Labels**: APM transactions enriched with correlation data and user actions
+- **Automatic Instrumentation**: fetch() and XHR calls automatically instrumented with trace headers
 
-### API/Backend Observability
-- **Distributed Tracing**: OpenTelemetry spans with correlation attributes
-- **Request Correlation**: API requests enriched with correlation metadata
-- **Database Operation Tracking**: SQL operations linked to user actions via correlation IDs
+### API/Backend Observability (FastAPI + OpenTelemetry)
+- **Automatic Instrumentation**: FastAPI automatically instrumented with OpenTelemetry
+- **Trace Context Propagation**: Receives and processes RUM trace context from frontend
+- **Oracle Integration**: Embeds APM trace/span IDs directly in SQL comments for correlation
+- **Span Enrichment**: API spans enriched with correlation attributes and database metadata
+- **Database Operation Tracking**: Every SQL operation linked to originating APM trace/span
+- **Error Correlation**: API errors linked to frontend user actions via trace context
 
 ## Demo Features
 
@@ -229,36 +239,51 @@ The interactive demo at `http://localhost:8081` includes:
 - **Performance Testing**: Scenarios to test different SQL execution patterns
 - **Error Simulation**: Generate errors with correlation context for debugging
 
-## Querying Correlation Data in Observe
+## Querying APM Correlation Data in Observe
 
-### Frontend RUM Data
+### Frontend RUM Data with APM Traces
 ```sql
--- Find RUM transactions with correlation IDs
-FIELDS.custom_correlation_id IS NOT NULL
+-- Find RUM transactions with APM correlation
+FIELDS.custom_correlation_id LIKE "rum-%"
+AND FIELDS.trace_id IS NOT NULL
 ```
 
-### API Span Data  
+### API Span Data with Full APM Context
 ```sql
--- Find API traces with correlation
-FIELDS.correlation.id IS NOT NULL
+-- Find API traces with RUM correlation
+FIELDS.correlation.id LIKE "rum-%"
+AND FIELDS.trace_id IS NOT NULL
 ```
 
-### Database Log Data
+### Database Explain Plans with APM Correlation
 ```sql
--- Find SQL queries with correlation IDs
-FIELDS.logs.attributes.LOG_TYPE = "recent_sql" 
-AND FIELDS.logs.attributes.CORRELATION_ID != "none"
+-- Find Oracle explain plans linked to APM traces
+FIELDS.logs.attributes.LOG_TYPE = "execution_plan_with_correlation" 
+AND FIELDS.logs.attributes.CORRELATION_ID LIKE "rum-%"
+AND FIELDS.logs.attributes.OTEL_TRACE_ID != "no_trace"
 ```
 
-### Link Frontend to Database
+### Recent SQL Executions with APM Context
 ```sql
--- Correlate frontend actions to database queries
+-- Find SQL executions with full OpenTelemetry context
+FIELDS.logs.attributes.LOG_TYPE = "recent_sql_execution"
+AND FIELDS.logs.attributes.CORRELATION_ID LIKE "rum-%"
+AND FIELDS.logs.attributes.OTEL_TRACE_ID != "no_trace"
+```
+
+### Complete End-to-End APM Correlation
+```sql
+-- Link frontend RUM → API → database with full APM trace context
 SELECT 
+  rum.trace_id,
   rum.custom_correlation_id,
-  logs.CORRELATION_ID,
-  logs.body as sql_query
-FROM rum_data rum
-JOIN database_logs logs 
-ON rum.custom_correlation_id = logs.CORRELATION_ID
+  api.span_id,
+  db.logs.attributes.OTEL_TRACE_ID,
+  db.logs.attributes.OTEL_SPAN_ID,
+  db.logs.body as execution_plan
+FROM rum_transactions rum
+JOIN api_spans api ON rum.trace_id = api.trace_id
+JOIN database_logs db ON api.correlation_id = db.logs.attributes.CORRELATION_ID
+WHERE db.logs.attributes.LOG_TYPE = "execution_plan_with_correlation"
 ```
 
