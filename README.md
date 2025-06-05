@@ -28,7 +28,7 @@ This demo implements complete **OpenTelemetry-native correlation tracking** acro
 4. **API Span** → Extracts correlation from OpenTelemetry trace/span IDs
 5. **Database Query** → Embeds full OpenTelemetry context + correlation in SQL comments
 6. **OTEL Collector** → Extracts real APM trace/span IDs and correlation from SQL text
-7. **Observe** → Complete APM trace linking frontend → API → database operations
+7. **Observe** → Dashboards, monitors & explorers linking frontend → API → database operations
 
 ### Correlation ID Format
 - **Pattern**: `rum-{trace_id_12_chars}-{span_id_8_chars}`
@@ -386,7 +386,7 @@ This section explains the technical implementation of end-to-end correlation fro
 4. **API embeds in SQL** → `/* correlation_id=rum-498f7f4d8c70-3fc5f9b6 otel_trace_id=498f7f4d8c70f0b3d8ef243ed48eb913 */`
 5. **Oracle stores SQL** → SQL text persists in `v$sql` with embedded correlation
 6. **OTEL Collector extracts** → Regex extracts correlation from SQL comments
-7. **Observe receives** → Complete APM trace linking frontend → API → database explain plan
+7. **Observe receives** → Creates dashboards & monitors linking frontend → API → database explain plan
 
 ### Why This Approach Works in Production
 

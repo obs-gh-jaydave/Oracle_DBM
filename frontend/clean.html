@@ -250,37 +250,76 @@ initApm({
         </div>
 
         <div class="demo-section">
-            <h2>Oracle Database Backend</h2>
-            <p>This demo includes full-stack observability:</p>
-            <ul>
-                <li><strong>Frontend RUM</strong>: Observe Inc Real User Monitoring tracking all user interactions</li>
-                <li><strong>API Calls</strong>: HTTP requests from frontend → Oracle API → Database</li>
-                <li><strong>SQL Execution</strong>: Each button above triggers different Oracle SQL patterns</li>
-                <li><strong>Explain Plans</strong>: OTEL collector captures actual execution plans</li>
-                <li><strong>End-to-End Tracing</strong>: From user click → RUM → API → SQL → Observe</li>
-            </ul>
+            <h2>🔍 How This Demo Works</h2>
             
-            <h3>🔍 API Layer vs Direct Database Interactions:</h3>
-            <ul>
-                <li><strong>API Calls</strong>: Frontend → FastAPI → Oracle Database → OTEL Collector → Observe</li>
-                <li><strong>Direct Database</strong>: Oracle Database → OTEL Collector → Observe (bypasses API)</li>
-                <li><strong>RUM Tracing</strong>: Frontend interactions captured by Observe RUM SDK</li>
-                <li><strong>APM Tracing</strong>: API calls traced through OpenTelemetry instrumentation</li>
-                <li><strong>Database Monitoring</strong>: SQL execution plans and metrics via OTEL sqlquery receiver</li>
-            </ul>
-            
-            <h3>🔍 What Each Button Does:</h3>
-            <ul>
-                <li><strong>Get All Employees</strong>: Triggers FULL table scan with ORDER BY (via API)</li>
-                <li><strong>High Salary Filter</strong>: Uses INDEX range scan on salary column (via API)</li>
-                <li><strong>Salary Analytics</strong>: GROUP BY aggregation with multiple functions (via API)</li>
-                <li><strong>Add New Employee</strong>: INSERT operation with index maintenance (via API)</li>
-                <li><strong>Complex Join Query</strong>: Self-join with nested loops (via API)</li>
-                <li><strong>Slow Query</strong>: Cartesian product for performance testing (via API)</li>
-                <li><strong>Direct Database Activity</strong>: Backend database operations (no API layer)</li>
-                <li><strong>Bulk Data Operations</strong>: Simulates batch processing (backend only)</li>
-                <li><strong>Long Running Query</strong>: Analytical queries (backend monitoring)</li>
-            </ul>
+            <!-- Visual Flow Diagram -->
+            <div style="background: #f8f9fa; border: 2px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 20px 0;">
+                <h3 style="margin-top: 0; text-align: center; color: #495057;">End-to-End Correlation Flow</h3>
+                <div style="font-family: monospace; font-size: 14px; line-height: 1.8; text-align: center;">
+                    <div style="color: #007cba; font-weight: bold;">👆 User Click</div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #e3f2fd; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>Frontend RUM</strong><br/>
+                        <small>Generates correlation ID: rum-{trace}-{span}</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #e8f5e8; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>FastAPI Backend</strong><br/>
+                        <small>Receives trace context, embeds in SQL</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #fff3e0; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>Oracle Database</strong><br/>
+                        <small>Executes SQL with embedded correlation</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #fce4ec; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>OTEL Collector</strong><br/>
+                        <small>Captures explain plans + correlation</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #f3e5f5; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>Observe Platform</strong><br/>
+                        <small>Dashboards & monitors linking click → database</small>
+                    </div>
+                </div>
+            </div>
+
+            <h3>🎯 What Each Button Demonstrates</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0;">
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #007cba;">
+                    <strong>Get All Employees</strong><br/>
+                    <small>FULL table scan → Shows complete correlation flow</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #28a745;">
+                    <strong>High Salary Filter</strong><br/>
+                    <small>INDEX scan → Demonstrates efficient query plans</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #ffc107;">
+                    <strong>Salary Analytics</strong><br/>
+                    <small>GROUP BY → Shows aggregation with correlation</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #dc3545;">
+                    <strong>Add New Employee</strong><br/>
+                    <small>INSERT → Traces data modification operations</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #6f42c1;">
+                    <strong>Complex Join</strong><br/>
+                    <small>Self-join → Advanced query correlation tracking</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #fd7e14;">
+                    <strong>Slow Query</strong><br/>
+                    <small>Performance test → Shows impact analysis</small>
+                </div>
+            </div>
+
+            <h3>✨ The Magic: End-to-End Observability</h3>
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p style="margin: 0; font-size: 16px; text-align: center;">
+                    <strong>Every button click creates a complete trace</strong><br/>
+                    from your browser action to Observe dashboards, monitors & database explorers!
+                </p>
+            </div>
             
             <button onclick="checkDatabaseStatus()">Check Database Status</button>
             <div id="db-status" style="margin-top: 10px;"></div>
