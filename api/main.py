@@ -6,6 +6,7 @@ import random
 from datetime import datetime, timedelta
 from typing import List, Dict
 import json
+import time
 
 # OpenTelemetry imports
 from opentelemetry import trace
@@ -15,6 +16,7 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.sdk.resources import Resource
+# OpenTelemetry propagation handled by FastAPI instrumentation
 
 # Configure OpenTelemetry
 resource = Resource.create({
@@ -65,16 +67,80 @@ def get_oracle_connection():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
 
+def extract_correlation_from_request(request: Request):
+    """Extract correlation ID from RUM trace context or generate fallback"""
+    current_span = trace.get_current_span()
+    
+    # Try to extract from OpenTelemetry trace context (from RUM distributed tracing)
+    if current_span and current_span.get_span_context().trace_id != 0:
+        trace_id = format(current_span.get_span_context().trace_id, '032x')
+        span_id = format(current_span.get_span_context().span_id, '016x')
+        correlation_id = f"rum-{trace_id[:12]}-{span_id[:8]}"
+        
+        # Look for RUM-specific headers with correlation data
+        elastic_traceparent = request.headers.get("elastic-apm-traceparent")
+        if elastic_traceparent:
+            # Extract RUM trace info from elastic APM header
+            parts = elastic_traceparent.split('-')
+            if len(parts) >= 4:
+                rum_trace_id = parts[1][:12]  # First 12 chars of trace ID
+                correlation_id = f"rum-{rum_trace_id}"
+    else:
+        # Fallback to header-based correlation or generate
+        correlation_id = request.headers.get("x-correlation-id", f"api-{datetime.now().isoformat()}")
+    
+    # Extract user action from headers or span attributes
+    user_action = request.headers.get("x-user-action", "unknown")
+    
+    return correlation_id, user_action
+
+def execute_with_correlation(cursor, sql, correlation_id, user_action=None, params=None):
+    """Execute SQL with Oracle-native correlation context using CLIENT_INFO for production correlation"""
+    try:
+        # Get current OpenTelemetry trace context
+        current_span = trace.get_current_span()
+        trace_id = "unknown"
+        span_id = "unknown"
+        
+        if current_span and current_span.get_span_context().trace_id != 0:
+            trace_id = format(current_span.get_span_context().trace_id, '032x')[:16]  # Truncate for Oracle
+            span_id = format(current_span.get_span_context().span_id, '016x')
+        
+        # Set Oracle CLIENT_INFO with OpenTelemetry trace context (most reliable method)
+        client_info = f"otel_trace={trace_id},otel_span={span_id},correlation={correlation_id},user_action={user_action or 'unknown'}"
+        cursor.execute("BEGIN DBMS_APPLICATION_INFO.SET_CLIENT_INFO(:1); END;", [client_info])
+        
+        # Set Oracle client identifier as backup correlation method
+        cursor.execute("BEGIN DBMS_SESSION.SET_IDENTIFIER(:1); END;", [correlation_id])
+        
+        # Execute the actual SQL
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        
+        # Brief sleep to allow OTEL collector to capture correlation data
+        time.sleep(1)
+            
+        return cursor
+    except Exception as e:
+        # If context setting fails, still try to execute the SQL
+        print(f"Warning: Failed to set Oracle context: {e}")
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        return cursor
+
 @app.get("/")
 async def root():
     return {"message": "Oracle Demo API - Ready to trigger database queries!"}
 
 @app.get("/api/employees")
 async def get_employees(request: Request):
-    """Get employees list - triggers SELECT with explain plan"""
-    # Extract correlation ID from headers
-    correlation_id = request.headers.get("x-correlation-id", f"api-{datetime.now().isoformat()}")
-    user_action = request.headers.get("x-user-action", "employees")
+    """Get employees list - triggers SELECT with explain plan using Oracle-native correlation"""
+    # Extract correlation ID from RUM trace context
+    correlation_id, user_action = extract_correlation_from_request(request)
     
     # Add correlation ID to current span
     current_span = trace.get_current_span()
@@ -83,14 +149,24 @@ async def get_employees(request: Request):
         current_span.set_attribute("user.action", user_action)
         current_span.set_attribute("observability.layer", "api")
         current_span.set_attribute("database.operation", "select")
+        current_span.set_attribute("oracle.native_correlation", True)
     
     connection = get_oracle_connection()
     cursor = connection.cursor()
     
     try:
-        # Execute query with optimizer hint and correlation ID for tracking
+        # Get OpenTelemetry trace context for embedding in SQL
+        current_span = trace.get_current_span()
+        trace_id = "unknown"
+        span_id = "unknown"
+        
+        if current_span and current_span.get_span_context().trace_id != 0:
+            trace_id = format(current_span.get_span_context().trace_id, '032x')
+            span_id = format(current_span.get_span_context().span_id, '016x')
+        
+        # SQL with embedded OpenTelemetry trace context and correlation ID
         query = f"""
-        SELECT /*+ FULL(e) */ /* CORRELATION_ID={correlation_id} USER_ACTION={user_action} */
+        SELECT /*+ FULL(e) */ /* correlation_id={correlation_id} user_action={user_action} otel_trace_id={trace_id} otel_span_id={span_id} */
             employee_id, 
             first_name, 
             last_name, 
@@ -100,7 +176,8 @@ async def get_employees(request: Request):
         ORDER BY salary DESC
         """
         
-        cursor.execute(query)
+        # Execute with Oracle-native correlation context
+        execute_with_correlation(cursor, query, correlation_id, user_action)
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         
@@ -122,7 +199,9 @@ async def get_employees(request: Request):
             "observability": {
                 "user_action": user_action,
                 "sql_executed": True,
-                "table": "employees"
+                "table": "employees",
+                "oracle_native_correlation": True,
+                "correlation_method": "DBMS_SESSION.SET_IDENTIFIER"
             }
         }
         
@@ -139,10 +218,11 @@ async def get_employees(request: Request):
 
 @app.get("/api/employees/high-salary")
 async def get_high_salary_employees(request: Request):
-    """Get high salary employees - triggers INDEX scan"""
-    # Extract correlation ID from headers
-    correlation_id = request.headers.get("x-correlation-id", f"api-{datetime.now().isoformat()}")
-    user_action = request.headers.get("x-user-action", "high-salary")
+    """Get high salary employees - triggers INDEX scan with Oracle-native correlation"""
+    # Extract correlation ID from RUM trace context
+    correlation_id, user_action = extract_correlation_from_request(request)
+    if user_action == "unknown":
+        user_action = "high-salary"
     
     # Add correlation ID to current span
     current_span = trace.get_current_span()
@@ -151,13 +231,24 @@ async def get_high_salary_employees(request: Request):
         current_span.set_attribute("user.action", user_action)
         current_span.set_attribute("observability.layer", "api")
         current_span.set_attribute("database.operation", "select")
+        current_span.set_attribute("oracle.native_correlation", True)
     
     connection = get_oracle_connection()
     cursor = connection.cursor()
     
     try:
+        # Get OpenTelemetry trace context for embedding in SQL
+        current_span_for_sql = trace.get_current_span()
+        trace_id = "unknown"
+        span_id = "unknown"
+        
+        if current_span_for_sql and current_span_for_sql.get_span_context().trace_id != 0:
+            trace_id = format(current_span_for_sql.get_span_context().trace_id, '032x')
+            span_id = format(current_span_for_sql.get_span_context().span_id, '016x')
+        
+        # SQL with embedded OpenTelemetry trace context and correlation ID
         query = f"""
-        SELECT /*+ INDEX_RS_ASC(e emp_salary_idx) */ /* CORRELATION_ID={correlation_id} USER_ACTION={user_action} */
+        SELECT /*+ INDEX_RS_ASC(e emp_salary_idx) */ /* correlation_id={correlation_id} user_action={user_action} otel_trace_id={trace_id} otel_span_id={span_id} */
             employee_id, 
             first_name, 
             last_name, 
@@ -167,7 +258,9 @@ async def get_high_salary_employees(request: Request):
         ORDER BY salary DESC
         """
         
-        cursor.execute(query)
+        # Execute with Oracle-native correlation context
+        execute_with_correlation(cursor, query, correlation_id, user_action)
+        
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         
@@ -184,7 +277,9 @@ async def get_high_salary_employees(request: Request):
             "observability": {
                 "user_action": user_action,
                 "sql_executed": True,
-                "table": "employees"
+                "table": "employees",
+                "oracle_native_correlation": True,
+                "correlation_method": "DBMS_SESSION.SET_IDENTIFIER"
             }
         }
         
@@ -200,12 +295,27 @@ async def get_high_salary_employees(request: Request):
         connection.close()
 
 @app.get("/api/analytics/salary-stats")
-async def get_salary_analytics():
-    """Get salary analytics - triggers aggregation with GROUP BY"""
+async def get_salary_analytics(request: Request):
+    """Get salary analytics - triggers aggregation with GROUP BY using Oracle-native correlation"""
+    # Extract correlation ID from RUM trace context  
+    correlation_id, user_action = extract_correlation_from_request(request)
+    if user_action == "unknown":
+        user_action = "salary-analytics"
+    
+    # Add correlation ID to current span
+    current_span = trace.get_current_span()
+    if current_span:
+        current_span.set_attribute("correlation.id", correlation_id)
+        current_span.set_attribute("user.action", user_action)
+        current_span.set_attribute("observability.layer", "api")
+        current_span.set_attribute("database.operation", "select")
+        current_span.set_attribute("oracle.native_correlation", True)
+    
     connection = get_oracle_connection()
     cursor = connection.cursor()
     
     try:
+        # Clean SQL without embedded correlation ID comments
         query = """
         SELECT /*+ FULL(e) */ 
             TRUNC(hire_date, 'MONTH') as hire_month,
@@ -218,7 +328,9 @@ async def get_salary_analytics():
         ORDER BY hire_month DESC
         """
         
-        cursor.execute(query)
+        # Execute with Oracle-native correlation context
+        execute_with_correlation(cursor, query, correlation_id, user_action)
+        
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         
@@ -233,11 +345,22 @@ async def get_salary_analytics():
                 record['AVG_SALARY'] = round(float(record['AVG_SALARY']), 2)
             analytics.append(record)
         
-        return {
+        # Add correlation tracking to response
+        result = {
             "query_type": "salary_analytics",
             "explain_plan_hint": "FULL scan with GROUP BY aggregation",
-            "analytics": analytics
+            "analytics": analytics,
+            "correlation_id": correlation_id,
+            "observability": {
+                "user_action": user_action,
+                "sql_executed": True,
+                "table": "employees",
+                "oracle_native_correlation": True,
+                "correlation_method": "DBMS_SESSION.SET_IDENTIFIER"
+            }
         }
+        
+        return result
     
     finally:
         cursor.close()

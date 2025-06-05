@@ -24,134 +24,195 @@ receivers:
   sqlquery:
     driver: oracle
     datasource: "oracle://otel_monitor:${ORACLE_PASSWORD}@oracle-db:1521/XEPDB1"
-    collection_interval: 30s
+    collection_interval: 10s
     queries:
-      # 1) Recent SQL Queries (captures API calls) 
+      # 1) Oracle ECID Session Correlation (Datadog-style DBM)
       - sql: |
-          SELECT
-            NVL(sql.sql_id, 'unknown') AS SQL_ID,
-            NVL(sql.plan_hash_value, 0) AS PLAN_HASH_VALUE,
-            NVL(sql.parsing_schema_name, 'unknown') AS SCHEMA_NAME,
-            'recent_sql' AS LOG_TYPE,
-            TRUNC(sql.elapsed_time / 1000000) AS EXECUTION_TIME_SECONDS,
-            sql.executions AS EXECUTION_COUNT,
-            TRUNC(sql.last_active_time) AS LAST_ACTIVE_TIME,
-            SUBSTR(sql.sql_text, 1, 100) AS SQL_TEXT_PREVIEW,
-            NVL(REGEXP_SUBSTR(sql.sql_text, 'CORRELATION_ID=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
-            NVL(REGEXP_SUBSTR(sql.sql_text, 'USER_ACTION=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION
-          FROM v$sql sql
-          WHERE sql.last_active_time > SYSDATE - INTERVAL '2' MINUTE
-            AND sql.parsing_schema_name IN ('TESTUSER', 'SYS')
-            AND sql.sql_text NOT LIKE '%v$sql%'
-            AND sql.executions > 0
-        metrics:
-          - metric_name: oracle.sql.execution_time
-            value_column: EXECUTION_TIME_SECONDS
-            data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, PLAN_HASH_VALUE, SCHEMA_NAME, EXECUTION_COUNT]
+          SELECT 
+            s.sid AS SESSION_ID,
+            s.serial# AS SERIAL_NUMBER,
+            s.username AS USERNAME,
+            s.program AS PROGRAM,
+            s.machine AS MACHINE,
+            s.osuser AS OS_USER,
+            -- Oracle ECID correlation (most reliable method)
+            NVL(s.client_identifier, 'none') AS ECID,
+            NVL(s.client_info, 'none') AS CLIENT_INFO,
+            NVL(s.module, 'unknown') AS MODULE,
+            NVL(s.action, 'unknown') AS ACTION,
+            s.status AS SESSION_STATUS,
+            s.logon_time AS LOGON_TIME,
+            s.last_call_et AS LAST_CALL_ELAPSED_TIME,
+            -- Extract structured correlation from CLIENT_INFO
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_trace=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_span=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'correlation=([^,]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'user_action=([^,]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION,
+            'oracle_session_correlation' AS LOG_TYPE
+          FROM v$session s
+          WHERE (s.client_info LIKE '%otel_trace=%' OR s.client_identifier LIKE 'obs-%')
+            AND s.username = 'TESTUSER'
+            AND s.type = 'USER'
         logs:
-          - body_column: SQL_TEXT_PREVIEW
-            attribute_columns: [SQL_ID, SCHEMA_NAME, LOG_TYPE, EXECUTION_COUNT, EXECUTION_TIME_SECONDS, PLAN_HASH_VALUE, CORRELATION_ID, USER_ACTION]
+          - body_column: CLIENT_INFO
+            attribute_columns: [SESSION_ID, SERIAL_NUMBER, USERNAME, PROGRAM, MACHINE, ECID, MODULE, ACTION, SESSION_STATUS, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
 
-      # 2) SQL Execution Monitoring
+      # 2) Oracle Database Performance Metrics (Datadog DBM-style)
       - sql: |
-          SELECT
-            sql_id AS SQL_ID,
-            sql_exec_id AS EXEC_ID,
-            sql_plan_hash_value AS PLAN_HASH_VALUE,
-            status AS STATUS,
-            username AS USERNAME,
-            module AS MODULE,
-            CAST(TRUNC(elapsed_time/1000000) AS NUMBER(10,0)) AS ELAPSED_TIME_SECONDS,
-            CAST(TRUNC(cpu_time/1000000) AS NUMBER(10,0)) AS CPU_TIME_SECONDS,
-            buffer_gets AS BUFFER_GETS,
-            disk_reads AS DISK_READS,
-            direct_writes AS DIRECT_WRITES,
-            CAST(TRUNC(physical_read_bytes/1024/1024) AS NUMBER(10,0)) AS PHYSICAL_READ_MB,
-            CAST(TRUNC(physical_write_bytes/1024/1024) AS NUMBER(10,0)) AS PHYSICAL_WRITE_MB
-          FROM v$sql_monitor
-          WHERE status = 'EXECUTING'
+          SELECT 
+            'buffer_cache_hit_ratio' AS METRIC_NAME,
+            ROUND((1 - (phy.value / GREATEST(db.value + cons.value, 1))) * 100, 2) AS METRIC_VALUE,
+            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
+            'oracle_performance' AS LOG_TYPE
+          FROM v$sysstat phy, v$sysstat db, v$sysstat cons
+          WHERE phy.name = 'physical reads'
+            AND db.name = 'db block gets'  
+            AND cons.name = 'consistent gets'
+          UNION ALL
+          SELECT 
+            'library_cache_hit_ratio' AS METRIC_NAME,
+            ROUND((SUM(pins - reloads) / GREATEST(SUM(pins), 1)) * 100, 2) AS METRIC_VALUE,
+            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
+            'oracle_performance' AS LOG_TYPE
+          FROM v$librarycache
+          UNION ALL
+          SELECT 
+            'shared_pool_free_percent' AS METRIC_NAME,
+            ROUND((free_mem.bytes / total_mem.bytes) * 100, 2) AS METRIC_VALUE,
+            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
+            'oracle_performance' AS LOG_TYPE
+          FROM (SELECT SUM(bytes) AS bytes FROM v$sgastat WHERE pool = 'shared pool' AND name = 'free memory') free_mem,
+               (SELECT SUM(bytes) AS bytes FROM v$sgastat WHERE pool = 'shared pool') total_mem
+        metrics:
+          - metric_name: oracle.performance.metric
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            attribute_columns: [METRIC_NAME, ECID, LOG_TYPE]
+
+      # 3) Oracle SQL Execution Monitoring with ECID correlation (Datadog DBM-style)
+      - sql: |
+          SELECT 
+            sm.sql_id AS SQL_ID,
+            sm.sql_exec_id AS EXEC_ID,
+            sm.plan_hash_value AS PLAN_HASH_VALUE,
+            sm.status AS STATUS,
+            sm.username AS USERNAME,
+            sm.module AS MODULE,
+            sm.action AS ACTION,
+            ROUND(sm.elapsed_time / 1000000, 2) AS ELAPSED_TIME_SECONDS,
+            ROUND(sm.cpu_time / 1000000, 2) AS CPU_TIME_SECONDS,
+            sm.buffer_gets AS BUFFER_GETS,
+            sm.disk_reads AS DISK_READS,
+            sm.direct_writes AS DIRECT_WRITES,
+            ROUND(sm.physical_read_bytes / 1048576, 2) AS PHYSICAL_READ_MB,
+            ROUND(sm.physical_write_bytes / 1048576, 2) AS PHYSICAL_WRITE_MB,
+            -- Extract correlation from session CLIENT_INFO
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_trace=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_span=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'correlation=([^,]+)', 1, 1, NULL, 1), s.client_identifier) AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'user_action=([^,]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            'oracle_sql_execution' AS LOG_TYPE
+          FROM v$sql_monitor sm
+          LEFT JOIN v$session s ON sm.sid = s.sid AND sm.session_serial# = s.serial#
+          WHERE sm.last_refresh_time > SYSDATE - INTERVAL '60' SECOND
+            AND sm.username = 'TESTUSER'
+            AND sm.status IN ('EXECUTING', 'DONE (ALL ROWS)', 'DONE (FIRST N ROWS)', 'DONE (ERROR)')
         metrics:
           - metric_name: oracle.sql.elapsed_time
             value_column: ELAPSED_TIME_SECONDS
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.cpu_time
             value_column: CPU_TIME_SECONDS
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.buffer_gets
             value_column: BUFFER_GETS
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.disk_reads
             value_column: DISK_READS
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.direct_writes
             value_column: DIRECT_WRITES
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.physical_read_mb
             value_column: PHYSICAL_READ_MB
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.physical_write_mb
             value_column: PHYSICAL_WRITE_MB
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
 
-      # 3) Recent SQL Statements with Correlation ID extraction
+      # 4) Execution Plans with Correlation from SQL Comments (Most Reliable)
       - sql: |
           SELECT 
             sql.sql_id AS SQL_ID,
+            'execution_plan_with_correlation' AS LOG_TYPE,
             sql.parsing_schema_name AS SCHEMA_NAME,
-            'recent_sql' AS LOG_TYPE,
-            sql.sql_text AS SQL_TEXT,
-            TRUNC(sql.last_active_time) AS LAST_ACTIVE_TIME,
-            sql.executions AS EXECUTION_COUNT,
-            NVL(REGEXP_SUBSTR(sql.sql_text, 'CORRELATION_ID=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
-            NVL(REGEXP_SUBSTR(sql.sql_text, 'USER_ACTION=([a-zA-Z0-9\-_]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION
+            sql.plan_hash_value AS PLAN_HASH_VALUE,
+            sql.last_active_time AS LAST_ACTIVE_TIME,
+            -- Extract correlation and OpenTelemetry context from SQL text comments (most reliable method)
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'correlation_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_correlation') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID,
+            LISTAGG(
+              LPAD(' ', p.depth * 2) || p.operation || 
+              CASE WHEN p.options IS NOT NULL THEN ' (' || p.options || ')' END ||
+              CASE WHEN p.object_name IS NOT NULL THEN ' ON ' || p.object_name END,
+              CHR(10)
+            ) WITHIN GROUP (ORDER BY p.id) AS EXECUTION_PLAN
           FROM v$sql sql
-          WHERE sql.last_active_time > SYSDATE - INTERVAL '2' MINUTE
-            AND sql.parsing_schema_name IN ('TESTUSER', 'SYS') 
+          JOIN v$sql_plan p ON sql.sql_id = p.sql_id AND sql.plan_hash_value = p.plan_hash_value
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '120' SECOND
+            AND sql.parsing_schema_name = 'TESTUSER'
             AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.sql_text NOT LIKE '%V$SQL%'
+            AND sql.sql_text NOT LIKE '%v$session%'
+            AND sql.sql_text NOT LIKE '%V$SESSION%'
             AND sql.executions > 0
-            AND ROWNUM <= 50
+          GROUP BY sql.sql_id, sql.parsing_schema_name, sql.plan_hash_value, sql.last_active_time, sql.sql_text
+        logs:
+          - body_column: EXECUTION_PLAN
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, PLAN_HASH_VALUE, LAST_ACTIVE_TIME, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION]
+
+      # 5) Recent SQL with Correlation Extraction from Comments
+      - sql: |
+          SELECT 
+            sql.sql_id AS SQL_ID,
+            'recent_sql_execution' AS LOG_TYPE,
+            sql.parsing_schema_name AS SCHEMA_NAME,
+            sql.executions AS EXECUTION_COUNT,
+            TRUNC(sql.elapsed_time / 1000000) AS ELAPSED_TIME_SECONDS,
+            NVL(SUBSTR(sql.sql_text, 1, 150), 'N/A') AS SQL_TEXT_PREVIEW,
+            -- Extract correlation and OpenTelemetry context from SQL comments
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'correlation_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_correlation') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID
+          FROM v$sql sql
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '45' SECOND
+            AND sql.parsing_schema_name = 'TESTUSER'
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.sql_text NOT LIKE '%V$SQL%'
+            AND sql.executions > 0
+            AND ROWNUM <= 10
           ORDER BY sql.last_active_time DESC
         logs:
-          - body_column: SQL_TEXT
-            attribute_columns: [SQL_ID, SCHEMA_NAME, LOG_TYPE, EXECUTION_COUNT, CORRELATION_ID, USER_ACTION]
-            
-      # 4) Explain Plan Text  
-      - sql: |
-          SELECT 
-            sql.sql_id AS SQL_ID,
-            'explain_plan' AS LOG_TYPE,
-            LISTAGG(
-              pln.operation || ' ' || 
-              CASE WHEN pln.options IS NOT NULL THEN '(' || pln.options || ') ' END ||
-              CASE WHEN pln.object_name IS NOT NULL THEN 'ON ' || pln.object_name END,
-              ' -> '
-            ) WITHIN GROUP (ORDER BY pln.id) AS PLAN_TEXT
-          FROM v$sql sql
-          JOIN v$sql_plan pln ON sql.sql_id = pln.sql_id
-          WHERE sql.last_active_time > SYSDATE - INTERVAL '2' MINUTE
-            AND sql.parsing_schema_name IN ('TESTUSER', 'SYS')
-            AND sql.sql_text NOT LIKE '%v$sql%'
-            AND ROWNUM <= 20
-          GROUP BY sql.sql_id
-        logs:
-          - body_column: PLAN_TEXT
-            attribute_columns: [SQL_ID, LOG_TYPE]
+          - body_column: SQL_TEXT_PREVIEW
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, EXECUTION_COUNT, ELAPSED_TIME_SECONDS, CORRELATION_ID, USER_ACTION, OTEL_TRACE_ID, OTEL_SPAN_ID]
 
 processors:
   batch:

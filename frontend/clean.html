@@ -374,13 +374,11 @@ initApm({
             
             const apiUrl = `http://localhost:8000${endpoint}`;
             
+            // Let RUM SDK handle distributed tracing headers automatically
             fetch(apiUrl, {
                 method: 'GET',
                 headers: {
-                    'Content-Type': 'application/json',
-                    'X-Correlation-ID': correlationId,
-                    'X-User-Action': userAction,
-                    'X-Observe-Trace-ID': correlationId
+                    'Content-Type': 'application/json'
                 }
             })
                 .then(response => {
@@ -509,9 +507,12 @@ initApm({
             serverUrlPrefix: '?environment=${OBSERVE_RUM_ENVIRONMENT}&serviceName=${OBSERVE_RUM_SERVICE_NAME}',
             serverUrl: 'https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v1/http/rum',
             breakdownMetrics: true,
-            distributedTracingOrigins: ['*'],
-            distributedTracingHeaderName: 'X-Observe-Rum-Id',
+            distributedTracingOrigins: ['http://localhost:8000'],
+            distributedTracingHeaderName: 'elastic-apm-traceparent',
             propagateTracestate: true,
+            instrumentFetch: true,
+            instrumentXHR: true,
+            captureHeaders: true,
             logLevel: 'debug',
             session: true,
             apiVersion: 2,
