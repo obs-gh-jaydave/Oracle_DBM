@@ -239,51 +239,160 @@ The interactive demo at `http://localhost:8081` includes:
 - **Performance Testing**: Scenarios to test different SQL execution patterns
 - **Error Simulation**: Generate errors with correlation context for debugging
 
-## Querying APM Correlation Data in Observe
+## What You'll See in Observe
 
-### Frontend RUM Data with APM Traces
-```sql
--- Find RUM transactions with APM correlation
-FIELDS.custom_correlation_id LIKE "rum-%"
-AND FIELDS.trace_id IS NOT NULL
-```
+This demo sends correlated data to Observe with the following attributes:
 
-### API Span Data with Full APM Context
-```sql
--- Find API traces with RUM correlation
-FIELDS.correlation.id LIKE "rum-%"
-AND FIELDS.trace_id IS NOT NULL
-```
+### Frontend RUM Data
+- **Custom correlation IDs** in transaction labels with format `rum-{trace_id}-{span_id}`
+- **OpenTelemetry trace context** linking user interactions to backend operations
+- **User action metadata** showing which demo buttons were clicked
 
-### Database Explain Plans with APM Correlation
-```sql
--- Find Oracle explain plans linked to APM traces
-FIELDS.logs.attributes.LOG_TYPE = "execution_plan_with_correlation" 
-AND FIELDS.logs.attributes.CORRELATION_ID LIKE "rum-%"
-AND FIELDS.logs.attributes.OTEL_TRACE_ID != "no_trace"
-```
+### API Span Data  
+- **Distributed traces** with correlation attributes from RUM context
+- **Database operation metadata** showing SQL execution details
+- **Response metrics** including record counts and query types
 
-### Recent SQL Executions with APM Context
-```sql
--- Find SQL executions with full OpenTelemetry context
-FIELDS.logs.attributes.LOG_TYPE = "recent_sql_execution"
-AND FIELDS.logs.attributes.CORRELATION_ID LIKE "rum-%"
-AND FIELDS.logs.attributes.OTEL_TRACE_ID != "no_trace"
-```
+### Database Monitoring Data
+- **Explain plans** with correlation IDs: `execution_plan_with_correlation`
+- **SQL execution logs** with APM trace/span IDs: `recent_sql_execution`  
+- **Oracle performance metrics** with correlation context
+- **Real OpenTelemetry trace/span IDs** extracted from SQL comments
 
-### Complete End-to-End APM Correlation
-```sql
--- Link frontend RUM → API → database with full APM trace context
-SELECT 
-  rum.trace_id,
-  rum.custom_correlation_id,
-  api.span_id,
-  db.logs.attributes.OTEL_TRACE_ID,
-  db.logs.attributes.OTEL_SPAN_ID,
-  db.logs.body as execution_plan
-FROM rum_transactions rum
-JOIN api_spans api ON rum.trace_id = api.trace_id
-JOIN database_logs db ON api.correlation_id = db.logs.attributes.CORRELATION_ID
-WHERE db.logs.attributes.LOG_TYPE = "execution_plan_with_correlation"
-```
+### Complete APM Correlation
+- **End-to-end tracing** from frontend clicks → API calls → Oracle explain plans
+- **Full OpenTelemetry context** with 32-character trace IDs and 16-character span IDs
+- **Oracle-native correlation** using production-ready database monitoring techniques
+
+## How Correlation Works Across Layers
+
+This section explains the technical implementation of end-to-end correlation from frontend to database explain plans.
+
+### Layer 1: Frontend RUM (Elastic APM SDK)
+
+**Location**: `frontend/clean.html`
+
+1. **Automatic Trace Generation**:
+   ```javascript
+   // RUM SDK automatically generates OpenTelemetry trace context
+   const transaction = elasticApm.startTransaction(`oracle-${userAction}`, 'user-action');
+   ```
+
+2. **Custom Correlation Labels**:
+   ```javascript
+   transaction.addLabels({
+       custom_correlation_id: correlationId,  // rum-{trace}-{span} format
+       custom_user_action: userAction,
+       custom_frontend_timestamp: Date.now()
+   });
+   ```
+
+3. **Automatic Distributed Tracing**:
+   ```javascript
+   // RUM SDK automatically adds trace headers to fetch() calls
+   fetch(apiUrl, {
+       method: 'GET',
+       headers: { 'Content-Type': 'application/json' }
+       // elastic-apm-traceparent header added automatically
+   });
+   ```
+
+### Layer 2: FastAPI Backend (OpenTelemetry APM)
+
+**Location**: `api/main.py`
+
+1. **Automatic Trace Context Reception**:
+   ```python
+   # FastAPI OpenTelemetry instrumentation automatically receives trace context
+   current_span = trace.get_current_span()
+   trace_id = format(current_span.get_span_context().trace_id, '032x')
+   span_id = format(current_span.get_span_context().span_id, '016x')
+   ```
+
+2. **Correlation ID Generation from APM Context**:
+   ```python
+   def extract_correlation_from_request(request: Request):
+       # Extract correlation from OpenTelemetry trace context (from RUM)
+       if current_span and current_span.get_span_context().trace_id != 0:
+           correlation_id = f"rum-{trace_id[:12]}-{span_id[:8]}"
+   ```
+
+3. **SQL Comment Embedding**:
+   ```python
+   # Embed full APM context in SQL comments for Oracle correlation
+   query = f"""
+   SELECT /*+ FULL(e) */ /* correlation_id={correlation_id} 
+                            user_action={user_action} 
+                            otel_trace_id={trace_id} 
+                            otel_span_id={span_id} */
+   FROM employees e ORDER BY salary DESC
+   """
+   ```
+
+### Layer 3: Oracle Database Integration
+
+**Location**: `api/main.py` - `execute_with_correlation()`
+
+1. **Oracle-Native Session Correlation**:
+   ```python
+   # Set Oracle CLIENT_INFO with structured correlation data
+   client_info = f"otel_trace={trace_id},otel_span={span_id},correlation={correlation_id}"
+   cursor.execute("BEGIN DBMS_APPLICATION_INFO.SET_CLIENT_INFO(:1); END;", [client_info])
+   
+   # Set Oracle client identifier as backup
+   cursor.execute("BEGIN DBMS_SESSION.SET_IDENTIFIER(:1); END;", [correlation_id])
+   ```
+
+2. **SQL Execution with Embedded Context**:
+   ```python
+   # Execute SQL with both session context AND embedded comments
+   cursor.execute(query)  # Contains APM trace/span IDs in comments
+   ```
+
+### Layer 4: OTEL Collector (Database Monitoring)
+
+**Location**: `otel-collector/collector-config.yaml`
+
+1. **Explain Plan Correlation Extraction**:
+   ```yaml
+   # Extract correlation and OpenTelemetry context from SQL text comments
+   NVL(REGEXP_SUBSTR(sql.sql_text, 'correlation_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_correlation') AS CORRELATION_ID,
+   NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
+   NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID,
+   ```
+
+2. **Explain Plan Capture with APM Context**:
+   ```yaml
+   # Query v$sql and v$sql_plan with correlation extraction
+   SELECT sql.sql_id, p.operation, p.options, p.object_name,
+          CORRELATION_ID, OTEL_TRACE_ID, OTEL_SPAN_ID
+   FROM v$sql sql
+   JOIN v$sql_plan p ON sql.sql_id = p.sql_id
+   WHERE sql.parsing_schema_name = 'TESTUSER'
+   ```
+
+3. **Data Export to Observe**:
+   ```yaml
+   logs:
+     - body_column: EXECUTION_PLAN
+       attribute_columns: [SQL_ID, CORRELATION_ID, OTEL_TRACE_ID, OTEL_SPAN_ID, USER_ACTION]
+   ```
+
+### Complete Correlation Flow Example
+
+1. **User clicks "Get All Employees"** → RUM generates trace `498f7f4d8c70f0b3d8ef243ed48eb913`
+2. **Frontend sends API request** → Automatically includes `elastic-apm-traceparent` header
+3. **FastAPI receives trace context** → Extracts correlation: `rum-498f7f4d8c70-3fc5f9b6`
+4. **API embeds in SQL** → `/* correlation_id=rum-498f7f4d8c70-3fc5f9b6 otel_trace_id=498f7f4d8c70f0b3d8ef243ed48eb913 */`
+5. **Oracle stores SQL** → SQL text persists in `v$sql` with embedded correlation
+6. **OTEL Collector extracts** → Regex extracts correlation from SQL comments
+7. **Observe receives** → Complete APM trace linking frontend → API → database explain plan
+
+### Why This Approach Works in Production
+
+- **No dependency on short-lived sessions** - correlation embedded in persistent SQL text
+- **OpenTelemetry standard compliance** - uses proper distributed tracing headers  
+- **Oracle-native techniques** - leverages `DBMS_SESSION` and `CLIENT_INFO` for production reliability
+- **Fallback mechanisms** - multiple correlation methods ensure data capture
+- **Performance optimized** - minimal overhead on database operations
 
