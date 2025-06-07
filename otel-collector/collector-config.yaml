@@ -26,7 +26,7 @@ receivers:
     datasource: "oracle://otel_monitor:${ORACLE_PASSWORD}@oracle-db:1521/XEPDB1"
     collection_interval: 10s
     queries:
-      # 1) Oracle ECID Session Correlation (Datadog-style DBM)
+      # 1) Oracle ECID Session Correlation
       - sql: |
           SELECT 
             s.sid AS SESSION_ID,
@@ -57,7 +57,7 @@ receivers:
           - body_column: CLIENT_INFO
             attribute_columns: [SESSION_ID, SERIAL_NUMBER, USERNAME, PROGRAM, MACHINE, ECID, MODULE, ACTION, SESSION_STATUS, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
 
-      # 2) Oracle Database Performance Metrics (Datadog DBM-style)
+      # 2) Oracle Database Performance Metrics 
       - sql: |
           SELECT 
             'buffer_cache_hit_ratio' AS METRIC_NAME,
@@ -88,9 +88,15 @@ receivers:
             value_column: METRIC_VALUE
             data_type: gauge
             value_type: double
+            description: "Oracle database performance indicators including buffer cache hit ratio, library cache efficiency, and memory utilization percentages"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "cache_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.performance.component: "cache_efficiency"
             attribute_columns: [METRIC_NAME, ECID, LOG_TYPE]
 
-      # 3) Oracle SQL Execution Monitoring with ECID correlation (Datadog DBM-style)
+      # 3) Oracle SQL Execution Monitoring with ECID correlation 
       - sql: |
           SELECT 
             sm.sql_id AS SQL_ID,
@@ -214,10 +220,254 @@ receivers:
           - body_column: SQL_TEXT_PREVIEW
             attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, EXECUTION_COUNT, ELAPSED_TIME_SECONDS, CORRELATION_ID, USER_ACTION, OTEL_TRACE_ID, OTEL_SPAN_ID]
 
+      # 6) Oracle System Health Metrics 
+      - sql: |
+          SELECT 
+            'active_sessions' AS METRIC_NAME,
+            COUNT(*) AS METRIC_VALUE,
+            'count' AS UNIT_TYPE,
+            'oracle_system' AS LOG_TYPE
+          FROM v$session 
+          WHERE status = 'ACTIVE' AND type = 'USER'
+          UNION ALL
+          SELECT 
+            'total_sessions' AS METRIC_NAME,
+            COUNT(*) AS METRIC_VALUE,
+            'count' AS UNIT_TYPE,
+            'oracle_system' AS LOG_TYPE
+          FROM v$session 
+          WHERE type = 'USER'
+          UNION ALL
+          SELECT 
+            'memory_sga_size_mb' AS METRIC_NAME,
+            ROUND(SUM(value) / 1024 / 1024, 2) AS METRIC_VALUE,
+            'megabytes' AS UNIT_TYPE,
+            'oracle_memory' AS LOG_TYPE
+          FROM v$sga
+        metrics:
+          - metric_name: oracle.sessions.active
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of active Oracle user sessions currently connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.sessions.total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of Oracle user sessions (active and inactive) connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.memory.sga_size
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Size of Oracle System Global Area (SGA) in megabytes - shared memory region for database caching and processing"
+            static_attributes:
+              oracle.metric.category: "memory"
+              oracle.metric.type: "memory_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.memory.component: "sga"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+
+      # 7) Oracle Tablespace Metrics 
+      - sql: |
+          SELECT 
+            ts.tablespace_name AS TABLESPACE_NAME,
+            'tablespace_size_mb' AS METRIC_NAME,
+            ROUND(ts.total_size_mb, 2) AS METRIC_VALUE,
+            'megabytes' AS UNIT_TYPE,
+            'oracle_tablespace' AS LOG_TYPE
+          FROM (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS total_size_mb
+            FROM dba_data_files 
+            GROUP BY tablespace_name
+          ) ts
+          UNION ALL
+          SELECT 
+            ts.tablespace_name AS TABLESPACE_NAME,
+            'tablespace_used_mb' AS METRIC_NAME,
+            ROUND(ts.total_size_mb - NVL(fs.free_size_mb, 0), 2) AS METRIC_VALUE,
+            'megabytes' AS UNIT_TYPE,
+            'oracle_tablespace' AS LOG_TYPE
+          FROM (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS total_size_mb
+            FROM dba_data_files 
+            GROUP BY tablespace_name
+          ) ts
+          LEFT JOIN (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS free_size_mb
+            FROM dba_free_space 
+            GROUP BY tablespace_name
+          ) fs ON ts.tablespace_name = fs.tablespace_name
+        metrics:
+          - metric_name: oracle.tablespace.size
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total allocated size of Oracle tablespace in megabytes - represents maximum storage capacity"
+            static_attributes:
+              oracle.metric.category: "storage"
+              oracle.metric.type: "storage_metrics"
+              oracle.monitoring.level: "tablespace"
+              oracle.storage.type: "permanent"
+            attribute_columns: [TABLESPACE_NAME, METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.tablespace.used
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Used storage space in Oracle tablespace in megabytes - indicates actual data consumption"
+            static_attributes:
+              oracle.metric.category: "storage"
+              oracle.metric.type: "storage_metrics"
+              oracle.monitoring.level: "tablespace"
+              oracle.storage.type: "permanent"
+            attribute_columns: [TABLESPACE_NAME, METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+
+      # 8) Oracle Wait Events 
+      - sql: |
+          SELECT 
+            event AS WAIT_EVENT,
+            'wait_time_seconds' AS METRIC_NAME,
+            ROUND(time_waited_micro / 1000000, 4) AS METRIC_VALUE,
+            'seconds' AS UNIT_TYPE,
+            wait_class AS WAIT_CLASS,
+            'oracle_wait_events' AS LOG_TYPE
+          FROM v$system_event 
+          WHERE wait_class != 'Idle' 
+            AND total_waits > 0
+            AND time_waited_micro > 0
+          ORDER BY time_waited_micro DESC
+          FETCH FIRST 10 ROWS ONLY
+        metrics:
+          - metric_name: oracle.wait_events.time
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total time spent waiting for Oracle database events in seconds - indicates performance bottlenecks and resource contention"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "wait_events"
+              oracle.monitoring.level: "instance"
+              oracle.performance.impact: "high"
+            attribute_columns: [WAIT_EVENT, WAIT_CLASS, METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+
+      # 9) Oracle I/O and System Statistics
+      - sql: |
+          SELECT 
+            'physical_reads' AS METRIC_NAME,
+            value AS METRIC_VALUE,
+            'reads' AS UNIT_TYPE,
+            'oracle_io' AS LOG_TYPE
+          FROM v$sysstat 
+          WHERE name = 'physical reads'
+          UNION ALL
+          SELECT 
+            'physical_writes' AS METRIC_NAME,
+            value AS METRIC_VALUE,
+            'writes' AS UNIT_TYPE,
+            'oracle_io' AS LOG_TYPE
+          FROM v$sysstat 
+          WHERE name = 'physical writes'
+          UNION ALL
+          SELECT 
+            'redo_size_bytes' AS METRIC_NAME,
+            value AS METRIC_VALUE,
+            'bytes' AS UNIT_TYPE,
+            'oracle_redo' AS LOG_TYPE
+          FROM v$sysstat 
+          WHERE name = 'redo size'
+        metrics:
+          - metric_name: oracle.io.physical_reads
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total number of physical disk read operations performed by Oracle database - indicates storage I/O load"
+            static_attributes:
+              oracle.metric.category: "io"
+              oracle.metric.type: "io_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.io.direction: "read"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.io.physical_writes
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total number of physical disk write operations performed by Oracle database - indicates storage write activity"
+            static_attributes:
+              oracle.metric.category: "io"
+              oracle.metric.type: "io_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.io.direction: "write"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.redo.size_bytes
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total size of Oracle redo log data in bytes - measures transaction volume and database activity"
+            static_attributes:
+              oracle.metric.category: "transactions"
+              oracle.metric.type: "transaction_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.transaction.component: "redo_log"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+
 processors:
   batch:
     timeout: 10s
     send_batch_size: 10
+  
+  resource:
+    attributes:
+      - key: oracle.instance.name
+        value: "XEPDB1"
+        action: upsert
+      - key: oracle.database.name
+        value: "XE"
+        action: upsert
+      - key: oracle.host
+        value: "oracle-db"
+        action: upsert
+      - key: oracle.port
+        value: "1521"
+        action: upsert
+      - key: oracle.version
+        value: "21c"
+        action: upsert
+      - key: oracle.edition
+        value: "express"
+        action: upsert
+      - key: environment
+        value: "development"
+        action: upsert
+      - key: datacenter
+        value: "local"
+        action: upsert
+      - key: region
+        value: "us-west-1"
+        action: upsert
+      - key: service.name
+        value: "oracle-database"
+        action: upsert
+      - key: service.version
+        value: "21.3.0.0.0"
+        action: upsert
+      - key: deployment.environment
+        value: "dev"
+        action: upsert
 
 exporters:
   debug:
@@ -241,7 +491,7 @@ service:
       exporters: [debug, otlphttp/observe]
     metrics:
       receivers: [hostmetrics, sqlquery]
-      processors: [batch]
+      processors: [resource, batch]
       exporters: [prometheus, otlphttp/observe]
     logs:
       receivers: [sqlquery]
