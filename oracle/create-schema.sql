@@ -44,3 +44,6 @@ COMMIT;
 -- Create an index to support our queries
 CREATE INDEX emp_salary_idx ON employees(salary);
 CREATE INDEX emp_hire_date_idx ON employees(hire_date);
+
+-- Create Oracle context for OpenTelemetry correlation tracking
+CREATE OR REPLACE CONTEXT OTEL_CTX USING DBMS_SESSION ACCESSED GLOBALLY;

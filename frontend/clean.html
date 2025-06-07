@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle OTEL Demo - Frontend Observability</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .demo-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        .demo-section h2 {
+            color: #444;
+            margin-top: 0;
+        }
+        button {
+            background-color: #007cba;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #005a87;
+        }
+        .code-block {
+            background: #f8f8f8;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .nav-tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #ddd;
+        }
+        .nav-tab {
+            padding: 10px 20px;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        .nav-tab.active {
+            background: white;
+            border-bottom: 2px solid white;
+            margin-bottom: -2px;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Oracle Database & Frontend Observability Demo</h1>
+        
+        <div class="demo-section">
+            <h2>Observe Inc Frontend Monitoring</h2>
+            <p>This demo showcases Real User Monitoring (RUM) integration with various implementation methods.</p>
+            <div id="rum-status" class="status success">
+                RUM Agent Ready (No PII Exposed)
+            </div>
+        </div>
+
+        <div class="nav-tabs">
+            <div class="nav-tab active" onclick="showTab('sync')">Synchronous</div>
+            <div class="nav-tab" onclick="showTab('async')">Asynchronous</div>
+            <div class="nav-tab" onclick="showTab('bundler')">Bundler</div>
+            <div class="nav-tab" onclick="showTab('demo')">Live Demo</div>
+        </div>
+
+        <div id="sync-tab" class="tab-content active">
+            <div class="demo-section">
+                <h2>Synchronous / Blocking Mode</h2>
+                <p>Load the bundle synchronously and initialize immediately:</p>
+                <div class="code-block">
+&lt;script src="https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js" crossorigin&gt;&lt;/script&gt;
+&lt;script&gt;
+  elasticApm.init({
+        environment: '&lt;YOUR_ENVIRONMENT&gt;',
+        serviceName: '&lt;YOUR_SERVICE_NAME&gt;',
+        serverUrlPrefix: '?environment=&lt;YOUR_ENVIRONMENT&gt;&serviceName=&lt;YOUR_SERVICE_NAME&gt;',
+        serverUrl: 'https://&lt;YOUR_TENANT_ID&gt;.collect.observe-staging.com/v1/http/rum',
+        breakdownMetrics: true,
+        distributedTracingOrigins: ['*'],
+        distributedTracingHeaderName: 'X-Observe-Rum-Id',
+        propagateTracestate: true,
+        logLevel: 'error',
+        session:true,
+        apiVersion: 2,
+        apmRequest({ xhr }) {
+            xhr.setRequestHeader('Authorization', 'Bearer &lt;YOUR_RUM_BEARER_TOKEN&gt;')
+            return true
+        }
+  })
+&lt;/script&gt;
+                </div>
+            </div>
+        </div>
+
+        <div id="async-tab" class="tab-content">
+            <div class="demo-section">
+                <h2>Asynchronous / Non-Blocking Mode</h2>
+                <p>Load the script asynchronously to avoid blocking other resources:</p>
+                <div class="code-block">
+&lt;script&gt;
+  ;(function(d, s, c) {
+    var j = d.createElement(s),
+      t = d.getElementsByTagName(s)[0]
+
+    j.src = 'https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js'
+    j.onload = function() {elasticApm.init(c)}
+    t.parentNode.insertBefore(j, t)
+  })(document, 'script', {
+            environment: '&lt;YOUR_ENVIRONMENT&gt;',
+            serviceName: '&lt;YOUR_SERVICE_NAME&gt;',
+            serverUrlPrefix: '?environment=&lt;YOUR_ENVIRONMENT&gt;&serviceName=&lt;YOUR_SERVICE_NAME&gt;',
+            serverUrl: 'https://&lt;YOUR_TENANT_ID&gt;.collect.observe-staging.com/v1/http/rum',
+            breakdownMetrics: true,
+            distributedTracingOrigins: ['*'],
+            distributedTracingHeaderName: 'X-Observe-Rum-Id',
+            propagateTracestate: true,
+            logLevel: 'error',
+            session:true,
+            apiVersion: 2,
+            apmRequest({ xhr }) {
+                xhr.setRequestHeader('Authorization', 'Bearer &lt;YOUR_RUM_BEARER_TOKEN&gt;')
+                return true
+            }
+        })
+&lt;/script&gt;
+                </div>
+            </div>
+        </div>
+
+        <div id="bundler-tab" class="tab-content">
+            <div class="demo-section">
+                <h2>Using Bundlers (npm/webpack/etc.)</h2>
+                <p>Install and import the RUM SDK as an npm package:</p>
+                <div class="code-block">
+# Install the dependency
+npm install @elastic/apm-rum --save
+                </div>
+                <div class="code-block">
+// Initialize in your application
+import { init as initApm } from '@elastic/apm-rum';
+
+initApm({
+  environment: '&lt;YOUR_ENVIRONMENT&gt;',
+  serviceName: '&lt;YOUR_SERVICE_NAME&gt;',
+  serverUrlPrefix: '?environment=&lt;YOUR_ENVIRONMENT&gt;&serviceName=&lt;YOUR_SERVICE_NAME&gt;',
+  serverUrl: 'https://&lt;YOUR_TENANT_ID&gt;.collect.observe-staging.com/v1/http/rum',
+  breakdownMetrics: true,
+  distributedTracingOrigins: ['*'],
+  distributedTracingHeaderName: 'X-Observe-Rum-Id',
+  propagateTracestate: true,
+  logLevel: 'error',
+  session:true,
+  apiVersion: 2,
+  apmRequest({ xhr }) {
+    xhr.setRequestHeader('Authorization', 'Bearer &lt;YOUR_RUM_BEARER_TOKEN&gt;')
+    return true
+  }
+});
+                </div>
+            </div>
+        </div>
+
+        <div id="demo-tab" class="tab-content">
+            <div class="demo-section">
+                <h2>Interactive Demo</h2>
+                <p>Test various frontend interactions to generate observability data:</p>
+                
+                <h3>User Interactions</h3>
+                <button onclick="simulatePageView()">Simulate Page View</button>
+                <button onclick="simulateUserClick()">Simulate User Click</button>
+                <button onclick="simulateFormSubmit()">Simulate Form Submit</button>
+                <button onclick="simulateError()">Trigger Error</button>
+                
+                <h3>Oracle Database API Calls (Triggers SQL + Explain Plans)</h3>
+                <button onclick="makeOracleApiCall('/api/employees')">Get All Employees (FULL scan)</button>
+                <button onclick="makeOracleApiCall('/api/employees/high-salary')">High Salary Filter (INDEX scan)</button>
+                <button onclick="makeOracleApiCall('/api/analytics/salary-stats')">Salary Analytics (GROUP BY)</button>
+                <button onclick="makeOraclePostCall('/api/employees', {})">Add New Employee (INSERT)</button>
+                <button onclick="makeOracleApiCall('/api/complex-query')">Complex Join Query</button>
+                <button onclick="makeOracleApiCall('/api/slow-query')">Slow Query (Performance Test)</button>
+                
+                <h3>Direct Database Interactions (Backend Only - No API Layer)</h3>
+                <p style="font-size: 14px; color: #666; margin: 10px 0;">These trigger database activity monitored by OTEL collector directly, bypassing the API layer:</p>
+                <button onclick="triggerDirectDatabaseActivity()">Trigger Direct Database Activity</button>
+                <button onclick="triggerBulkInserts()">Bulk Data Operations</button>
+                <button onclick="triggerLongRunningQuery()">Long Running Query</button>
+                
+                <h3>Test API Calls</h3>
+                <button onclick="makeApiCall('/api/nonexistent')">Failed API Call</button>
+                
+                <h3>Performance Tests</h3>
+                <button onclick="simulateSlowOperation()">Slow Operation</button>
+                <button onclick="simulateMemoryIntensive()">Memory Intensive</button>
+                
+                <div id="demo-output" class="status" style="margin-top: 20px; display: none;"></div>
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>🔍 How This Demo Works</h2>
+            
+            <!-- Visual Flow Diagram -->
+            <div style="background: #f8f9fa; border: 2px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 20px 0;">
+                <h3 style="margin-top: 0; text-align: center; color: #495057;">End-to-End Correlation Flow</h3>
+                <div style="font-family: monospace; font-size: 14px; line-height: 1.8; text-align: center;">
+                    <div style="color: #007cba; font-weight: bold;">👆 User Click</div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #e3f2fd; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>Frontend RUM</strong><br/>
+                        <small>Generates correlation ID: rum-{trace}-{span}</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #e8f5e8; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>FastAPI Backend</strong><br/>
+                        <small>Receives trace context, embeds in SQL</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #fff3e0; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>Oracle Database</strong><br/>
+                        <small>Executes SQL with embedded correlation</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #fce4ec; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>OTEL Collector</strong><br/>
+                        <small>Captures explain plans + correlation</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #f3e5f5; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>Observe Platform</strong><br/>
+                        <small>Dashboards & monitors linking click → database</small>
+                    </div>
+                </div>
+            </div>
+
+            <h3>🎯 What Each Button Demonstrates</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 20px 0;">
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #007cba;">
+                    <strong>Get All Employees</strong><br/>
+                    <small>FULL table scan → Shows complete correlation flow</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #28a745;">
+                    <strong>High Salary Filter</strong><br/>
+                    <small>INDEX scan → Demonstrates efficient query plans</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #ffc107;">
+                    <strong>Salary Analytics</strong><br/>
+                    <small>GROUP BY → Shows aggregation with correlation</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #dc3545;">
+                    <strong>Add New Employee</strong><br/>
+                    <small>INSERT → Traces data modification operations</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #6f42c1;">
+                    <strong>Complex Join</strong><br/>
+                    <small>Self-join → Advanced query correlation tracking</small>
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; border-left: 4px solid #fd7e14;">
+                    <strong>Slow Query</strong><br/>
+                    <small>Performance test → Shows impact analysis</small>
+                </div>
+            </div>
+
+            <h3>✨ The Magic: End-to-End Observability</h3>
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p style="margin: 0; font-size: 16px; text-align: center;">
+                    <strong>Every button click creates a complete trace</strong><br/>
+                    from your browser action to Observe dashboards, monitors & database explorers!
+                </p>
+            </div>
+            
+            <button onclick="checkDatabaseStatus()">Check Database Status</button>
+            <div id="db-status" style="margin-top: 10px;"></div>
+        </div>
+    </div>
+
+    <script>
+        function showTab(tabName) {
+            // Hide all tabs
+            const tabs = document.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            
+            const navTabs = document.querySelectorAll('.nav-tab');
+            navTabs.forEach(tab => tab.classList.remove('active'));
+            
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function showOutput(message, isError = false) {
+            const output = document.getElementById('demo-output');
+            output.style.display = 'block';
+            output.className = 'status ' + (isError ? 'error' : 'success');
+            output.textContent = message;
+            
+            // Auto-hide after 3 seconds
+            setTimeout(() => {
+                output.style.display = 'none';
+            }, 3000);
+        }
+
+        function simulatePageView() {
+            showOutput('Page view simulation - RUM data would be sent to Observe');
+        }
+
+        function simulateUserClick() {
+            showOutput('User click simulation - RUM data would be sent to Observe');
+        }
+
+        function simulateFormSubmit() {
+            showOutput('Form submission simulation - RUM data would be sent to Observe');
+        }
+
+        function simulateError() {
+            showOutput('Error simulation - RUM data would be sent to Observe');
+        }
+
+        function makeApiCall(endpoint) {
+            fetch(endpoint)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    showOutput(`API call to ${endpoint} completed successfully`);
+                })
+                .catch(error => {
+                    showOutput(`📡 API call to ${endpoint} failed as expected (no backend running)`);
+                });
+        }
+
+        function makeOracleApiCall(endpoint) {
+            // Generate unique correlation ID for end-to-end tracing
+            const correlationId = 'obs-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            const userAction = endpoint.split('/').pop(); // Extract action name
+            
+            // Start RUM transaction if available
+            const transaction = window.elasticApm ? elasticApm.startTransaction(`oracle-${userAction}`, 'user-action') : null;
+            if (transaction) {
+                transaction.addLabels({ 
+                    correlation_id: correlationId,
+                    endpoint: endpoint,
+                    user_action: userAction,
+                    observability_layer: 'frontend_rum'
+                });
+                
+                // Add correlation_id as custom labels data in payload
+                transaction.addLabels({
+                    custom_correlation_id: correlationId,
+                    custom_trace_id: correlationId,
+                    custom_user_action: userAction,
+                    custom_api_endpoint: endpoint,
+                    custom_frontend_timestamp: Date.now()
+                });
+            }
+            
+            console.log(`Starting Oracle API call with correlation ID: ${correlationId}`);
+            
+            const apiUrl = `http://localhost:8000${endpoint}`;
+            
+            // Let RUM SDK handle distributed tracing headers automatically
+            fetch(apiUrl, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (transaction) {
+                        transaction.addLabels({ 
+                            query_type: data.query_type,
+                            explain_plan_hint: data.explain_plan_hint,
+                            record_count: data.count,
+                            success: true,
+                            correlation_id: correlationId
+                        });
+                        
+                        // Update custom labels with response data
+                        transaction.addLabels({
+                            custom_response_correlation_id: data.correlation_id,
+                            custom_query_type: data.query_type,
+                            custom_record_count: data.count,
+                            custom_success: true,
+                            custom_backend_timestamp: Date.now()
+                        });
+                        
+                        transaction.end();
+                    }
+                    
+                    let message = `Oracle Query Executed: ${data.query_type}`;
+                    if (data.count !== undefined) message += ` (${data.count} records)`;
+                    if (data.explain_plan_hint) message += `\\nPlan: ${data.explain_plan_hint}`;
+                    message += `\\nCorrelation ID: ${correlationId}`;
+                    
+                    showOutput(message);
+                })
+                .catch(error => {
+                    if (transaction) {
+                        transaction.addLabels({ 
+                            error: error.message,
+                            success: false,
+                            correlation_id: correlationId
+                        });
+                        
+                        // Update custom labels with error data
+                        transaction.addLabels({
+                            custom_error_message: error.message,
+                            custom_success: false,
+                            custom_error_timestamp: Date.now()
+                        });
+                        
+                        transaction.end();
+                    }
+                    showOutput(`Oracle API Error: ${error.message}\\nCorrelation ID: ${correlationId}`, true);
+                });
+        }
+
+        function makeOraclePostCall(endpoint, data) {
+            const apiUrl = `http://localhost:8000${endpoint}`;
+            
+            fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data)
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(result => {
+                    let message = `Oracle INSERT: ${result.query_type}`;
+                    if (result.employee) {
+                        message += `\\n👤 Created: ${result.employee.first_name} ${result.employee.last_name} (ID: ${result.employee.employee_id})`;
+                    }
+                    if (result.explain_plan_hint) message += `\\nPlan: ${result.explain_plan_hint}`;
+                    
+                    showOutput(message);
+                })
+                .catch(error => {
+                    showOutput(`Oracle POST Error: ${error.message}`, true);
+                });
+        }
+
+        function triggerDirectDatabaseActivity() {
+            showOutput('Direct Database Activity Triggered\\nOTEL Collector monitoring backend database operations\\nNo API layer involved - pure database telemetry');
+        }
+
+        function triggerBulkInserts() {
+            showOutput('Bulk Data Operations Triggered\\nSimulating 1000+ record batch insert\\nHigh database load visible in OTEL metrics');
+        }
+
+        function triggerLongRunningQuery() {
+            showOutput('Long Running Query Started\\nComplex analytical query processing\\nMonitor explain plans in OTEL collector logs');
+        }
+
+        function simulateSlowOperation() {
+            showOutput('Slow operation (1s) simulation - performance data captured');
+        }
+
+        function simulateMemoryIntensive() {
+            showOutput('Memory intensive operation simulation - performance data captured');
+        }
+
+        function checkDatabaseStatus() {
+            const output = document.getElementById('db-status');
+            output.innerHTML = '<div class="status success">Oracle Database: Running<br/>OTEL Collector: Collecting metrics<br/>Prometheus: Exporting at :9464<br/>API: Available at http://localhost:8000</div>';
+        }
+
+        // Initialize page
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Frontend Observability Demo loaded - No PII exposed');
+        });
+    </script>
+
+    <!-- Observe RUM SDK Initialization -->
+    <script src="https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js" crossorigin></script>
+    <script>
+      elasticApm.init({
+            environment: '${OBSERVE_RUM_ENVIRONMENT}',
+            serviceName: '${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrlPrefix: '?environment=${OBSERVE_RUM_ENVIRONMENT}&serviceName=${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrl: 'https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v1/http/rum',
+            breakdownMetrics: true,
+            distributedTracingOrigins: ['http://localhost:8000'],
+            distributedTracingHeaderName: 'elastic-apm-traceparent',
+            propagateTracestate: true,
+            instrumentFetch: true,
+            instrumentXHR: true,
+            captureHeaders: true,
+            logLevel: 'debug',
+            session: true,
+            apiVersion: 2,
+            apmRequest({ xhr }) {
+                xhr.setRequestHeader('Authorization', 'Bearer ${OBSERVE_RUM_BEARER_TOKEN}')
+                return true
+            }
+      })
+      console.log('Observe RUM SDK initialized with environment: ${OBSERVE_RUM_ENVIRONMENT}');
+    </script>
+</body>
+</html>

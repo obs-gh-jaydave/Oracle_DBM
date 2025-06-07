@@ -2,23 +2,30 @@ services:
   oracle-db:
     image: gvenzl/oracle-xe:latest
     container_name: oracle-db
+    platform: linux/amd64
     environment:
-      - ORACLE_PASSWORD=YourSecurePassword123  
+      - ORACLE_PASSWORD=${ORACLE_PASSWORD}
     ports:
       - "1521:1521"
     volumes:
       - ./oracle/setup.sql:/container-entrypoint-initdb.d/00_setup.sql
       - ./oracle/create-schema.sql:/container-entrypoint-initdb.d/01_create-schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/YourSecurePassword123@localhost:1521/XEPDB1 || exit 1"]
-      interval: 10s
-      timeout: 10s
+      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/${ORACLE_PASSWORD}@localhost:1521/XEPDB1 || exit 1"]
+      interval: 30s
+      timeout: 20s
       retries: 10
+      start_period: 120s
 
 
   otel-collector:
     build: ./otel-collector
     container_name: otel-collector
+    environment:
+      - OBSERVE_TENANT_ID=${OBSERVE_TENANT_ID}
+      - OBSERVE_STAGING_DOMAIN=${OBSERVE_STAGING_DOMAIN}
+      - OBSERVE_BACKEND_BEARER_TOKEN=${OBSERVE_BACKEND_BEARER_TOKEN}
+      - ORACLE_PASSWORD=${ORACLE_PASSWORD}
     depends_on:
       oracle-db:
         condition: service_healthy
@@ -39,3 +46,33 @@ services:
       ORACLE_SID: "XEPDB1"
       ORACLE_USER: testuser
       ORACLE_PASSWORD: testpass
+
+  api:
+    build: ./api
+    container_name: oracle-api
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+    environment:
+      ORACLE_HOST: oracle-db
+      ORACLE_PORT: "1521"
+      ORACLE_SID: "XEPDB1"
+      ORACLE_USER: testuser
+      ORACLE_PASSWORD: testpass
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: frontend-observability
+    environment:
+      - OBSERVE_TENANT_ID=${OBSERVE_TENANT_ID}
+      - OBSERVE_STAGING_DOMAIN=${OBSERVE_STAGING_DOMAIN}
+      - OBSERVE_RUM_BEARER_TOKEN=${OBSERVE_RUM_BEARER_TOKEN}
+      - OBSERVE_RUM_ENVIRONMENT=${OBSERVE_RUM_ENVIRONMENT}
+      - OBSERVE_RUM_SERVICE_NAME=${OBSERVE_RUM_SERVICE_NAME}
+    ports:
+      - "8081:80"
+    depends_on:
+      - oracle-db
+      - otel-collector

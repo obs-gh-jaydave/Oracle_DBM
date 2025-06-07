@@ -1,144 +1,473 @@
 receivers:
+  # OTLP receiver for APM traces from applications
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://localhost:8080"
+            - "http://localhost:8081"
+            - "http://localhost:8000"
+          allowed_headers:
+            - "*"
+
+  # Host metrics for testing Observe connectivity
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+  
   sqlquery:
     driver: oracle
-    datasource: "oracle://otel_monitor:YourSecurePassword123@oracle-db:1521/freepdb1"
-    collection_interval: 30s
+    datasource: "oracle://otel_monitor:${ORACLE_PASSWORD}@oracle-db:1521/XEPDB1"
+    collection_interval: 10s
     queries:
-      # 1) SQL Plan Metrics
+      # 1) Oracle ECID Session Correlation
       - sql: |
-          SELECT
-            NVL(s.service_name, 'unknown') AS SERVICE_NAME,
-            NVL(q.sql_id, 'unknown') AS SQL_ID,
-            NVL(q.plan_hash_value, 0) AS PLAN_HASH_VALUE,
-            NVL(q.operation, 'unknown') AS OPERATION,
-            NVL(q.object_name, 'unknown') AS OBJECT_NAME,
-            NVL(q.cost, 0) AS COST,
-            NVL(q.io_cost, 0) AS IO_COST,
-            TRUNC(sql.elapsed_time / 1000000) AS EXECUTION_TIME_SECONDS
-          FROM 
-            v$sql_plan q
-            JOIN v$session s ON s.sql_id = q.sql_id
-            JOIN v$sql sql ON sql.sql_id = q.sql_id
-          WHERE 
-            s.status = 'ACTIVE'
+          SELECT 
+            s.sid AS SESSION_ID,
+            s.serial# AS SERIAL_NUMBER,
+            s.username AS USERNAME,
+            s.program AS PROGRAM,
+            s.machine AS MACHINE,
+            s.osuser AS OS_USER,
+            -- Oracle ECID correlation (most reliable method)
+            NVL(s.client_identifier, 'none') AS ECID,
+            NVL(s.client_info, 'none') AS CLIENT_INFO,
+            NVL(s.module, 'unknown') AS MODULE,
+            NVL(s.action, 'unknown') AS ACTION,
+            s.status AS SESSION_STATUS,
+            s.logon_time AS LOGON_TIME,
+            s.last_call_et AS LAST_CALL_ELAPSED_TIME,
+            -- Extract structured correlation from CLIENT_INFO
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_trace=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_span=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'correlation=([^,]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'user_action=([^,]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION,
+            'oracle_session_correlation' AS LOG_TYPE
+          FROM v$session s
+          WHERE (s.client_info LIKE '%otel_trace=%' OR s.client_identifier LIKE 'obs-%')
+            AND s.username = 'TESTUSER'
             AND s.type = 'USER'
-            AND sql.elapsed_time > 1000000
-        metrics:
-          - metric_name: oracle.explain_plan.execution_time
-            value_column: EXECUTION_TIME_SECONDS
-            data_type: gauge
-            value_type: int
-            attribute_columns:
-              - SERVICE_NAME
-              - SQL_ID
-              - PLAN_HASH_VALUE
-              - OPERATION
-              - OBJECT_NAME
-          - metric_name: oracle.explain_plan.cost
-            value_column: COST
-            data_type: gauge
-            value_type: int
-            attribute_columns:
-              - SQL_ID
-              - PLAN_HASH_VALUE
-              - OPERATION
-              - OBJECT_NAME
-          - metric_name: oracle.explain_plan.io_cost
-            value_column: IO_COST
-            data_type: gauge
-            value_type: int
-            attribute_columns:
-              - SQL_ID
-              - PLAN_HASH_VALUE
-              - OPERATION
-              - OBJECT_NAME
+        logs:
+          - body_column: CLIENT_INFO
+            attribute_columns: [SESSION_ID, SERIAL_NUMBER, USERNAME, PROGRAM, MACHINE, ECID, MODULE, ACTION, SESSION_STATUS, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
 
-      # 2) SQL Execution Monitoring
+      # 2) Oracle Database Performance Metrics 
       - sql: |
-          SELECT
-            sql_id AS SQL_ID,
-            sql_exec_id AS EXEC_ID,
-            sql_plan_hash_value AS PLAN_HASH_VALUE,
-            status AS STATUS,
-            username AS USERNAME,
-            module AS MODULE,
-            CAST(TRUNC(elapsed_time/1000000) AS NUMBER(10,0)) AS ELAPSED_TIME_SECONDS,
-            CAST(TRUNC(cpu_time/1000000) AS NUMBER(10,0)) AS CPU_TIME_SECONDS,
-            buffer_gets AS BUFFER_GETS,
-            disk_reads AS DISK_READS,
-            direct_writes AS DIRECT_WRITES,
-            CAST(TRUNC(physical_read_bytes/1024/1024) AS NUMBER(10,0)) AS PHYSICAL_READ_MB,
-            CAST(TRUNC(physical_write_bytes/1024/1024) AS NUMBER(10,0)) AS PHYSICAL_WRITE_MB
-          FROM v$sql_monitor
-          WHERE status = 'EXECUTING'
+          SELECT 
+            'buffer_cache_hit_ratio' AS METRIC_NAME,
+            ROUND((1 - (phy.value / GREATEST(db.value + cons.value, 1))) * 100, 2) AS METRIC_VALUE,
+            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
+            'oracle_performance' AS LOG_TYPE
+          FROM v$sysstat phy, v$sysstat db, v$sysstat cons
+          WHERE phy.name = 'physical reads'
+            AND db.name = 'db block gets'  
+            AND cons.name = 'consistent gets'
+          UNION ALL
+          SELECT 
+            'library_cache_hit_ratio' AS METRIC_NAME,
+            ROUND((SUM(pins - reloads) / GREATEST(SUM(pins), 1)) * 100, 2) AS METRIC_VALUE,
+            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
+            'oracle_performance' AS LOG_TYPE
+          FROM v$librarycache
+          UNION ALL
+          SELECT 
+            'shared_pool_free_percent' AS METRIC_NAME,
+            ROUND((free_mem.bytes / total_mem.bytes) * 100, 2) AS METRIC_VALUE,
+            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
+            'oracle_performance' AS LOG_TYPE
+          FROM (SELECT SUM(bytes) AS bytes FROM v$sgastat WHERE pool = 'shared pool' AND name = 'free memory') free_mem,
+               (SELECT SUM(bytes) AS bytes FROM v$sgastat WHERE pool = 'shared pool') total_mem
+        metrics:
+          - metric_name: oracle.performance.metric
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Oracle database performance indicators including buffer cache hit ratio, library cache efficiency, and memory utilization percentages"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "cache_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.performance.component: "cache_efficiency"
+            attribute_columns: [METRIC_NAME, ECID, LOG_TYPE]
+
+      # 3) Oracle SQL Execution Monitoring with ECID correlation 
+      - sql: |
+          SELECT 
+            sm.sql_id AS SQL_ID,
+            sm.sql_exec_id AS EXEC_ID,
+            sm.plan_hash_value AS PLAN_HASH_VALUE,
+            sm.status AS STATUS,
+            sm.username AS USERNAME,
+            sm.module AS MODULE,
+            sm.action AS ACTION,
+            ROUND(sm.elapsed_time / 1000000, 2) AS ELAPSED_TIME_SECONDS,
+            ROUND(sm.cpu_time / 1000000, 2) AS CPU_TIME_SECONDS,
+            sm.buffer_gets AS BUFFER_GETS,
+            sm.disk_reads AS DISK_READS,
+            sm.direct_writes AS DIRECT_WRITES,
+            ROUND(sm.physical_read_bytes / 1048576, 2) AS PHYSICAL_READ_MB,
+            ROUND(sm.physical_write_bytes / 1048576, 2) AS PHYSICAL_WRITE_MB,
+            -- Extract correlation from session CLIENT_INFO
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_trace=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_span=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'correlation=([^,]+)', 1, 1, NULL, 1), s.client_identifier) AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'user_action=([^,]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            'oracle_sql_execution' AS LOG_TYPE
+          FROM v$sql_monitor sm
+          LEFT JOIN v$session s ON sm.sid = s.sid AND sm.session_serial# = s.serial#
+          WHERE sm.last_refresh_time > SYSDATE - INTERVAL '60' SECOND
+            AND sm.username = 'TESTUSER'
+            AND sm.status IN ('EXECUTING', 'DONE (ALL ROWS)', 'DONE (FIRST N ROWS)', 'DONE (ERROR)')
         metrics:
           - metric_name: oracle.sql.elapsed_time
             value_column: ELAPSED_TIME_SECONDS
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.cpu_time
             value_column: CPU_TIME_SECONDS
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.buffer_gets
             value_column: BUFFER_GETS
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.disk_reads
             value_column: DISK_READS
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.direct_writes
             value_column: DIRECT_WRITES
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.physical_read_mb
             value_column: PHYSICAL_READ_MB
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.physical_write_mb
             value_column: PHYSICAL_WRITE_MB
             data_type: gauge
-            value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE]
+            value_type: double
+            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
 
-      # 3) Explain Plan Text
+      # 4) Execution Plans with Correlation from SQL Comments (Most Reliable)
       - sql: |
-          WITH PLAN_TABLE AS (
-            SELECT 
-              ses.sql_id,
-              LISTAGG(
-                operation || ' ' || 
-                CASE WHEN options IS NOT NULL THEN '(' || options || ') ' END ||
-                CASE WHEN object_name IS NOT NULL THEN 'ON ' || object_name END,
-                ' -> '
-              ) WITHIN GROUP (ORDER BY id) AS plan_text
-            FROM v$sql_plan pln
-            JOIN v$session ses ON ses.sql_id = pln.sql_id
-            WHERE ses.status = 'ACTIVE'
-              AND ses.type = 'USER'
-              AND ses.sql_id IS NOT NULL
-            GROUP BY ses.sql_id
-          )
           SELECT 
-            sql_id AS SQL_ID,
-            'explain_plan' AS LOG_TYPE,
-            plan_text AS PLAN_TEXT
-          FROM PLAN_TABLE
+            sql.sql_id AS SQL_ID,
+            'execution_plan_with_correlation' AS LOG_TYPE,
+            sql.parsing_schema_name AS SCHEMA_NAME,
+            sql.plan_hash_value AS PLAN_HASH_VALUE,
+            sql.last_active_time AS LAST_ACTIVE_TIME,
+            -- Extract correlation and OpenTelemetry context from SQL text comments (most reliable method)
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'correlation_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_correlation') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID,
+            LISTAGG(
+              LPAD(' ', p.depth * 2) || p.operation || 
+              CASE WHEN p.options IS NOT NULL THEN ' (' || p.options || ')' END ||
+              CASE WHEN p.object_name IS NOT NULL THEN ' ON ' || p.object_name END,
+              CHR(10)
+            ) WITHIN GROUP (ORDER BY p.id) AS EXECUTION_PLAN
+          FROM v$sql sql
+          JOIN v$sql_plan p ON sql.sql_id = p.sql_id AND sql.plan_hash_value = p.plan_hash_value
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '120' SECOND
+            AND sql.parsing_schema_name = 'TESTUSER'
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.sql_text NOT LIKE '%V$SQL%'
+            AND sql.sql_text NOT LIKE '%v$session%'
+            AND sql.sql_text NOT LIKE '%V$SESSION%'
+            AND sql.executions > 0
+          GROUP BY sql.sql_id, sql.parsing_schema_name, sql.plan_hash_value, sql.last_active_time, sql.sql_text
         logs:
-          - body_column: PLAN_TEXT
-            attribute_columns: [SQL_ID, LOG_TYPE]
+          - body_column: EXECUTION_PLAN
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, PLAN_HASH_VALUE, LAST_ACTIVE_TIME, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION]
+
+      # 5) Recent SQL with Correlation Extraction from Comments
+      - sql: |
+          SELECT 
+            sql.sql_id AS SQL_ID,
+            'recent_sql_execution' AS LOG_TYPE,
+            sql.parsing_schema_name AS SCHEMA_NAME,
+            sql.executions AS EXECUTION_COUNT,
+            TRUNC(sql.elapsed_time / 1000000) AS ELAPSED_TIME_SECONDS,
+            NVL(SUBSTR(sql.sql_text, 1, 150), 'N/A') AS SQL_TEXT_PREVIEW,
+            -- Extract correlation and OpenTelemetry context from SQL comments
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'correlation_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_correlation') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID
+          FROM v$sql sql
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '45' SECOND
+            AND sql.parsing_schema_name = 'TESTUSER'
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.sql_text NOT LIKE '%V$SQL%'
+            AND sql.executions > 0
+            AND ROWNUM <= 10
+          ORDER BY sql.last_active_time DESC
+        logs:
+          - body_column: SQL_TEXT_PREVIEW
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, EXECUTION_COUNT, ELAPSED_TIME_SECONDS, CORRELATION_ID, USER_ACTION, OTEL_TRACE_ID, OTEL_SPAN_ID]
+
+      # 6) Oracle System Health Metrics 
+      - sql: |
+          SELECT 
+            'active_sessions' AS METRIC_NAME,
+            COUNT(*) AS METRIC_VALUE,
+            'count' AS UNIT_TYPE,
+            'oracle_system' AS LOG_TYPE
+          FROM v$session 
+          WHERE status = 'ACTIVE' AND type = 'USER'
+          UNION ALL
+          SELECT 
+            'total_sessions' AS METRIC_NAME,
+            COUNT(*) AS METRIC_VALUE,
+            'count' AS UNIT_TYPE,
+            'oracle_system' AS LOG_TYPE
+          FROM v$session 
+          WHERE type = 'USER'
+          UNION ALL
+          SELECT 
+            'memory_sga_size_mb' AS METRIC_NAME,
+            ROUND(SUM(value) / 1024 / 1024, 2) AS METRIC_VALUE,
+            'megabytes' AS UNIT_TYPE,
+            'oracle_memory' AS LOG_TYPE
+          FROM v$sga
+        metrics:
+          - metric_name: oracle.sessions.active
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of active Oracle user sessions currently connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.sessions.total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of Oracle user sessions (active and inactive) connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.memory.sga_size
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Size of Oracle System Global Area (SGA) in megabytes - shared memory region for database caching and processing"
+            static_attributes:
+              oracle.metric.category: "memory"
+              oracle.metric.type: "memory_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.memory.component: "sga"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+
+      # 7) Oracle Tablespace Metrics 
+      - sql: |
+          SELECT 
+            ts.tablespace_name AS TABLESPACE_NAME,
+            'tablespace_size_mb' AS METRIC_NAME,
+            ROUND(ts.total_size_mb, 2) AS METRIC_VALUE,
+            'megabytes' AS UNIT_TYPE,
+            'oracle_tablespace' AS LOG_TYPE
+          FROM (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS total_size_mb
+            FROM dba_data_files 
+            GROUP BY tablespace_name
+          ) ts
+          UNION ALL
+          SELECT 
+            ts.tablespace_name AS TABLESPACE_NAME,
+            'tablespace_used_mb' AS METRIC_NAME,
+            ROUND(ts.total_size_mb - NVL(fs.free_size_mb, 0), 2) AS METRIC_VALUE,
+            'megabytes' AS UNIT_TYPE,
+            'oracle_tablespace' AS LOG_TYPE
+          FROM (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS total_size_mb
+            FROM dba_data_files 
+            GROUP BY tablespace_name
+          ) ts
+          LEFT JOIN (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS free_size_mb
+            FROM dba_free_space 
+            GROUP BY tablespace_name
+          ) fs ON ts.tablespace_name = fs.tablespace_name
+        metrics:
+          - metric_name: oracle.tablespace.size
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total allocated size of Oracle tablespace in megabytes - represents maximum storage capacity"
+            static_attributes:
+              oracle.metric.category: "storage"
+              oracle.metric.type: "storage_metrics"
+              oracle.monitoring.level: "tablespace"
+              oracle.storage.type: "permanent"
+            attribute_columns: [TABLESPACE_NAME, METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.tablespace.used
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Used storage space in Oracle tablespace in megabytes - indicates actual data consumption"
+            static_attributes:
+              oracle.metric.category: "storage"
+              oracle.metric.type: "storage_metrics"
+              oracle.monitoring.level: "tablespace"
+              oracle.storage.type: "permanent"
+            attribute_columns: [TABLESPACE_NAME, METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+
+      # 8) Oracle Wait Events 
+      - sql: |
+          SELECT 
+            event AS WAIT_EVENT,
+            'wait_time_seconds' AS METRIC_NAME,
+            ROUND(time_waited_micro / 1000000, 4) AS METRIC_VALUE,
+            'seconds' AS UNIT_TYPE,
+            wait_class AS WAIT_CLASS,
+            'oracle_wait_events' AS LOG_TYPE
+          FROM v$system_event 
+          WHERE wait_class != 'Idle' 
+            AND total_waits > 0
+            AND time_waited_micro > 0
+          ORDER BY time_waited_micro DESC
+          FETCH FIRST 10 ROWS ONLY
+        metrics:
+          - metric_name: oracle.wait_events.time
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total time spent waiting for Oracle database events in seconds - indicates performance bottlenecks and resource contention"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "wait_events"
+              oracle.monitoring.level: "instance"
+              oracle.performance.impact: "high"
+            attribute_columns: [WAIT_EVENT, WAIT_CLASS, METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+
+      # 9) Oracle I/O and System Statistics
+      - sql: |
+          SELECT 
+            'physical_reads' AS METRIC_NAME,
+            value AS METRIC_VALUE,
+            'reads' AS UNIT_TYPE,
+            'oracle_io' AS LOG_TYPE
+          FROM v$sysstat 
+          WHERE name = 'physical reads'
+          UNION ALL
+          SELECT 
+            'physical_writes' AS METRIC_NAME,
+            value AS METRIC_VALUE,
+            'writes' AS UNIT_TYPE,
+            'oracle_io' AS LOG_TYPE
+          FROM v$sysstat 
+          WHERE name = 'physical writes'
+          UNION ALL
+          SELECT 
+            'redo_size_bytes' AS METRIC_NAME,
+            value AS METRIC_VALUE,
+            'bytes' AS UNIT_TYPE,
+            'oracle_redo' AS LOG_TYPE
+          FROM v$sysstat 
+          WHERE name = 'redo size'
+        metrics:
+          - metric_name: oracle.io.physical_reads
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total number of physical disk read operations performed by Oracle database - indicates storage I/O load"
+            static_attributes:
+              oracle.metric.category: "io"
+              oracle.metric.type: "io_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.io.direction: "read"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.io.physical_writes
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total number of physical disk write operations performed by Oracle database - indicates storage write activity"
+            static_attributes:
+              oracle.metric.category: "io"
+              oracle.metric.type: "io_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.io.direction: "write"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
+          - metric_name: oracle.redo.size_bytes
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Total size of Oracle redo log data in bytes - measures transaction volume and database activity"
+            static_attributes:
+              oracle.metric.category: "transactions"
+              oracle.metric.type: "transaction_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.transaction.component: "redo_log"
+            attribute_columns: [METRIC_NAME, UNIT_TYPE, LOG_TYPE]
 
 processors:
   batch:
     timeout: 10s
     send_batch_size: 10
+  
+  resource:
+    attributes:
+      - key: oracle.instance.name
+        value: "XEPDB1"
+        action: upsert
+      - key: oracle.database.name
+        value: "XE"
+        action: upsert
+      - key: oracle.host
+        value: "oracle-db"
+        action: upsert
+      - key: oracle.port
+        value: "1521"
+        action: upsert
+      - key: oracle.version
+        value: "21c"
+        action: upsert
+      - key: oracle.edition
+        value: "express"
+        action: upsert
+      - key: environment
+        value: "development"
+        action: upsert
+      - key: datacenter
+        value: "local"
+        action: upsert
+      - key: region
+        value: "us-west-1"
+        action: upsert
+      - key: service.name
+        value: "oracle-database"
+        action: upsert
+      - key: service.version
+        value: "21.3.0.0.0"
+        action: upsert
+      - key: deployment.environment
+        value: "dev"
+        action: upsert
 
 exporters:
   debug:
@@ -146,18 +475,23 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:9464"
   otlphttp/observe:
-    endpoint: "https://<OBSERVE_TENANT>.collect.observe-eng.com/v2/otel"
+    endpoint: "https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v2/otel"
     headers:
-      authorization: "Bearer <OBSERVE_TOKEN>"
+      authorization: "Bearer ${OBSERVE_BACKEND_BEARER_TOKEN}"
+    compression: gzip
 
 service:
   telemetry:
     logs:
       level: debug
   pipelines:
-    metrics:
-      receivers: [sqlquery]
+    traces:
+      receivers: [otlp]
       processors: [batch]
+      exporters: [debug, otlphttp/observe]
+    metrics:
+      receivers: [hostmetrics, sqlquery]
+      processors: [resource, batch]
       exporters: [prometheus, otlphttp/observe]
     logs:
       receivers: [sqlquery]
