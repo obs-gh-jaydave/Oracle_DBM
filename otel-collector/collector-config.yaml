@@ -62,7 +62,6 @@ receivers:
           SELECT 
             'buffer_cache_hit_ratio' AS METRIC_NAME,
             ROUND((1 - (phy.value / GREATEST(db.value + cons.value, 1))) * 100, 2) AS METRIC_VALUE,
-            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
             'oracle_performance' AS LOG_TYPE
           FROM v$sysstat phy, v$sysstat db, v$sysstat cons
           WHERE phy.name = 'physical reads'
@@ -72,14 +71,12 @@ receivers:
           SELECT 
             'library_cache_hit_ratio' AS METRIC_NAME,
             ROUND((SUM(pins - reloads) / GREATEST(SUM(pins), 1)) * 100, 2) AS METRIC_VALUE,
-            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
             'oracle_performance' AS LOG_TYPE
           FROM v$librarycache
           UNION ALL
           SELECT 
             'shared_pool_free_percent' AS METRIC_NAME,
             ROUND((free_mem.bytes / total_mem.bytes) * 100, 2) AS METRIC_VALUE,
-            SYS_CONTEXT('USERENV', 'CLIENT_IDENTIFIER') AS ECID,
             'oracle_performance' AS LOG_TYPE
           FROM (SELECT SUM(bytes) AS bytes FROM v$sgastat WHERE pool = 'shared pool' AND name = 'free memory') free_mem,
                (SELECT SUM(bytes) AS bytes FROM v$sgastat WHERE pool = 'shared pool') total_mem
@@ -94,72 +91,57 @@ receivers:
               oracle.metric.type: "cache_metrics"
               oracle.monitoring.level: "instance"
               oracle.performance.component: "cache_efficiency"
-            attribute_columns: [METRIC_NAME, ECID, LOG_TYPE]
+            attribute_columns: [METRIC_NAME, LOG_TYPE]
 
-      # 3) Oracle SQL Execution Monitoring with ECID correlation 
+      # 3) Oracle SQL Execution Monitoring - XE Compatible
       - sql: |
           SELECT 
-            sm.sql_id AS SQL_ID,
-            sm.sql_exec_id AS EXEC_ID,
-            sm.plan_hash_value AS PLAN_HASH_VALUE,
-            sm.status AS STATUS,
-            sm.username AS USERNAME,
-            sm.module AS MODULE,
-            sm.action AS ACTION,
-            ROUND(sm.elapsed_time / 1000000, 2) AS ELAPSED_TIME_SECONDS,
-            ROUND(sm.cpu_time / 1000000, 2) AS CPU_TIME_SECONDS,
-            sm.buffer_gets AS BUFFER_GETS,
-            sm.disk_reads AS DISK_READS,
-            sm.direct_writes AS DIRECT_WRITES,
-            ROUND(sm.physical_read_bytes / 1048576, 2) AS PHYSICAL_READ_MB,
-            ROUND(sm.physical_write_bytes / 1048576, 2) AS PHYSICAL_WRITE_MB,
-            -- Extract correlation from session CLIENT_INFO
-            NVL(REGEXP_SUBSTR(s.client_info, 'otel_trace=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
-            NVL(REGEXP_SUBSTR(s.client_info, 'otel_span=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
-            NVL(REGEXP_SUBSTR(s.client_info, 'correlation=([^,]+)', 1, 1, NULL, 1), s.client_identifier) AS CORRELATION_ID,
-            NVL(REGEXP_SUBSTR(s.client_info, 'user_action=([^,]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            s.sql_id AS SQL_ID,
+            s.parsing_schema_name AS USERNAME,
+            NVL(s.module, 'unknown') AS MODULE,
+            NVL(s.action, 'unknown') AS ACTION,
+            ROUND(s.elapsed_time / 1000000, 2) AS ELAPSED_TIME_SECONDS,
+            ROUND(s.cpu_time / 1000000, 2) AS CPU_TIME_SECONDS,
+            s.buffer_gets AS BUFFER_GETS,
+            s.disk_reads AS DISK_READS,
+            s.executions AS EXECUTION_COUNT,
+            -- Extract correlation from SQL text comments (XE compatible)
+            NVL(REGEXP_SUBSTR(s.sql_text, 'otel_trace_id=([^ \\*/]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(s.sql_text, 'otel_span_id=([^ \\*/]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
+            NVL(REGEXP_SUBSTR(s.sql_text, 'correlation_id=([^ \\*/]+)', 1, 1, NULL, 1), 'unknown') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(s.sql_text, 'user_action=([^ \\*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
             'oracle_sql_execution' AS LOG_TYPE
-          FROM v$sql_monitor sm
-          LEFT JOIN v$session s ON sm.sid = s.sid AND sm.session_serial# = s.serial#
-          WHERE sm.last_refresh_time > SYSDATE - INTERVAL '60' SECOND
-            AND sm.username = 'TESTUSER'
-            AND sm.status IN ('EXECUTING', 'DONE (ALL ROWS)', 'DONE (FIRST N ROWS)', 'DONE (ERROR)')
+          FROM v$sql s
+          WHERE s.last_active_time > SYSDATE - INTERVAL '60' SECOND
+            AND s.parsing_schema_name = 'TESTUSER'
+            AND s.executions > 0
+            AND ROWNUM <= 20
         metrics:
           - metric_name: oracle.sql.elapsed_time
             value_column: ELAPSED_TIME_SECONDS
             data_type: gauge
             value_type: double
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
+            attribute_columns: [SQL_ID, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.cpu_time
             value_column: CPU_TIME_SECONDS
             data_type: gauge
             value_type: double
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
+            attribute_columns: [SQL_ID, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.buffer_gets
             value_column: BUFFER_GETS
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
+            attribute_columns: [SQL_ID, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
           - metric_name: oracle.sql.disk_reads
             value_column: DISK_READS
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
-          - metric_name: oracle.sql.direct_writes
-            value_column: DIRECT_WRITES
+            attribute_columns: [SQL_ID, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
+          - metric_name: oracle.sql.execution_count
+            value_column: EXECUTION_COUNT
             data_type: gauge
             value_type: int
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
-          - metric_name: oracle.sql.physical_read_mb
-            value_column: PHYSICAL_READ_MB
-            data_type: gauge
-            value_type: double
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
-          - metric_name: oracle.sql.physical_write_mb
-            value_column: PHYSICAL_WRITE_MB
-            data_type: gauge
-            value_type: double
-            attribute_columns: [SQL_ID, EXEC_ID, PLAN_HASH_VALUE, STATUS, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
+            attribute_columns: [SQL_ID, USERNAME, MODULE, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
 
       # 4) Execution Plans with Correlation from SQL Comments (Most Reliable)
       - sql: |
@@ -430,43 +412,71 @@ processors:
     timeout: 10s
     send_batch_size: 10
   
+  # Auto-detect infrastructure and container environment
+  resourcedetection:
+    detectors: [env, system, docker, ec2, ecs, gcp, azure]
+    timeout: 5s
+    override: false
+    system:
+      hostname_sources: [dns, os]
+  
+  # Apply Oracle-specific and environment attributes
   resource:
     attributes:
+      # Oracle Instance Identification
       - key: oracle.instance.name
-        value: "XEPDB1"
+        value: "${ORACLE_INSTANCE_NAME}"
         action: upsert
       - key: oracle.database.name
-        value: "XE"
+        value: "${ORACLE_DATABASE_NAME}"
         action: upsert
       - key: oracle.host
-        value: "oracle-db"
+        value: "${ORACLE_HOST}"
         action: upsert
       - key: oracle.port
-        value: "1521"
+        value: "${ORACLE_PORT}"
         action: upsert
       - key: oracle.version
-        value: "21c"
+        value: "${ORACLE_VERSION}"
         action: upsert
       - key: oracle.edition
-        value: "express"
+        value: "${ORACLE_EDITION}"
         action: upsert
+      
+      # Environment & Deployment Configuration
       - key: environment
-        value: "development"
+        value: "${ENVIRONMENT}"
         action: upsert
       - key: datacenter
-        value: "local"
+        value: "${DATACENTER}"
         action: upsert
       - key: region
-        value: "us-west-1"
+        value: "${REGION}"
         action: upsert
       - key: service.name
-        value: "oracle-database"
+        value: "${SERVICE_NAME}"
         action: upsert
       - key: service.version
-        value: "21.3.0.0.0"
+        value: "${SERVICE_VERSION}"
         action: upsert
       - key: deployment.environment
-        value: "dev"
+        value: "${DEPLOYMENT_ENVIRONMENT}"
+        action: upsert
+      
+      # Deployment Tracking
+      - key: deployment.id
+        value: "${DEPLOYMENT_ID}"
+        action: upsert
+      - key: deployment.timestamp
+        value: "${DEPLOYMENT_TIMESTAMP}"
+        action: upsert
+      
+      # Additional metadata for production environments
+      - key: oracle.monitoring.collector
+        value: "otel-contrib"
+        action: upsert
+      - key: oracle.monitoring.version
+        value: "0.128.0"
         action: upsert
 
 exporters:
@@ -487,13 +497,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [resourcedetection, resource, batch]
       exporters: [debug, otlphttp/observe]
     metrics:
       receivers: [hostmetrics, sqlquery]
-      processors: [resource, batch]
+      processors: [resourcedetection, resource, batch]
       exporters: [prometheus, otlphttp/observe]
     logs:
       receivers: [sqlquery]
-      processors: [batch]
+      processors: [resourcedetection, resource, batch]
       exporters: [debug, otlphttp/observe]

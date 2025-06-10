@@ -4,8 +4,8 @@ RUN apt-get update && \
     apt-get install -y libaio1 wget unzip && \
     rm -rf /var/lib/apt/lists/*
 
-# Instead of cx_Oracle, install python-oracledb
-RUN pip install oracledb
+# Install required Python packages
+RUN pip install requests
 
 WORKDIR /app
 COPY loadgen.py .

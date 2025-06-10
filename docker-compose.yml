@@ -3,6 +3,7 @@ services:
     image: gvenzl/oracle-xe:latest
     container_name: oracle-db
     platform: linux/amd64
+    restart: unless-stopped
     environment:
       - ORACLE_PASSWORD=${ORACLE_PASSWORD}
     ports:
@@ -11,60 +12,130 @@ services:
       - ./oracle/setup.sql:/container-entrypoint-initdb.d/00_setup.sql
       - ./oracle/create-schema.sql:/container-entrypoint-initdb.d/01_create-schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/${ORACLE_PASSWORD}@localhost:1521/XEPDB1 || exit 1"]
-      interval: 30s
-      timeout: 20s
-      retries: 10
-      start_period: 120s
+      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/${ORACLE_PASSWORD}@localhost:1521/xepdb1 || exit 1"]
+      interval: 60s
+      timeout: 45s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
 
 
   otel-collector:
-    build: ./otel-collector
+    build: 
+      context: ./otel-collector
+      cache_from:
+        - otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
+      # Observe Configuration
       - OBSERVE_TENANT_ID=${OBSERVE_TENANT_ID}
       - OBSERVE_STAGING_DOMAIN=${OBSERVE_STAGING_DOMAIN}
       - OBSERVE_BACKEND_BEARER_TOKEN=${OBSERVE_BACKEND_BEARER_TOKEN}
       - ORACLE_PASSWORD=${ORACLE_PASSWORD}
+      
+      # Oracle Instance Identification (Production-Ready Attributes)
+      - ORACLE_INSTANCE_NAME=${ORACLE_INSTANCE_NAME}
+      - ORACLE_DATABASE_NAME=${ORACLE_DATABASE_NAME}
+      - ORACLE_HOST=${ORACLE_HOST}
+      - ORACLE_PORT=${ORACLE_PORT}
+      - ORACLE_VERSION=${ORACLE_VERSION}
+      - ORACLE_EDITION=${ORACLE_EDITION}
+      
+      # Environment & Deployment Configuration
+      - ENVIRONMENT=${ENVIRONMENT}
+      - DATACENTER=${DATACENTER}
+      - REGION=${REGION}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - DEPLOYMENT_ENVIRONMENT=${DEPLOYMENT_ENVIRONMENT}
+      
+      # Deployment Tracking
+      - DEPLOYMENT_ID=${DEPLOYMENT_ID}
+      - DEPLOYMENT_TIMESTAMP=${DEPLOYMENT_TIMESTAMP}
     depends_on:
       oracle-db:
         condition: service_healthy
     volumes:
       - ./otel-collector/collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      # Cache OTEL data temporarily
+      - otel_cache:/tmp/otel
     command: ["--config=/etc/otel-collector-config.yaml"]
     ports:
       - "9464:9464"
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
   oracle-loadgen:
-    build: ./loadgen
+    build: 
+      context: ./loadgen
+      cache_from:
+        - python:3.10-slim
+    restart: unless-stopped
     depends_on:
       oracle-db:
         condition: service_healthy
+      api:
+        condition: service_started
+      frontend:
+        condition: service_started
     environment:
-      ORACLE_HOST: oracle-db
-      ORACLE_PORT: "1521"
-      ORACLE_SID: "XEPDB1"
-      ORACLE_USER: testuser
-      ORACLE_PASSWORD: testpass
+      # API and Frontend endpoints for RUM simulation
+      API_BASE_URL: "http://api:8000"
+      FRONTEND_BASE_URL: "http://frontend-observability:80"
+      
+      # Load generation configuration
+      LOADGEN_MIN_SLEEP: "3"
+      LOADGEN_MAX_SLEEP: "10"
+      ENABLE_FRONTEND_SIMULATION: "true"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
 
   api:
-    build: ./api
+    build: 
+      context: ./api
+      cache_from:
+        - python:3.10-slim
     container_name: oracle-api
+    restart: unless-stopped
     depends_on:
       oracle-db:
         condition: service_healthy
     environment:
       ORACLE_HOST: oracle-db
       ORACLE_PORT: "1521"
-      ORACLE_SID: "XEPDB1"
+      ORACLE_SID: "xepdb1"
       ORACLE_USER: testuser
-      ORACLE_PASSWORD: testpass
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
     ports:
       - "8000:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
   frontend:
-    build: ./frontend
+    build: 
+      context: ./frontend
+      cache_from:
+        - nginx:alpine
     container_name: frontend-observability
+    restart: unless-stopped
     environment:
       - OBSERVE_TENANT_ID=${OBSERVE_TENANT_ID}
       - OBSERVE_STAGING_DOMAIN=${OBSERVE_STAGING_DOMAIN}
@@ -74,5 +145,17 @@ services:
     ports:
       - "8081:80"
     depends_on:
-      - oracle-db
-      - otel-collector
+      oracle-db:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+
+# Persistent volumes to avoid reinitialization
+volumes:
+  otel_cache:
+    driver: local

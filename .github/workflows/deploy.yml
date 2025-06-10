@@ -1,0 +1,136 @@
+name: Deploy Oracle OTEL Demo
+
+on:
+  push:
+    branches: [ main, production ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    env:
+      ENVIRONMENT: ${{ github.ref == 'refs/heads/production' && 'production' || 'staging' }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Generate deployment information
+      run: |
+        ./scripts/generate-deployment-info.sh
+        
+        # Load generated deployment info
+        source deployment-info.env
+        
+        # Set additional environment-specific values
+        if [ "$ENVIRONMENT" = "production" ]; then
+          echo "ORACLE_INSTANCE_NAME=PROD01" >> $GITHUB_ENV
+          echo "ORACLE_HOST=prod-oracle-01.company.com" >> $GITHUB_ENV
+          echo "ORACLE_VERSION=19c" >> $GITHUB_ENV
+          echo "ORACLE_EDITION=enterprise" >> $GITHUB_ENV
+          echo "DATACENTER=aws-us-east-1a" >> $GITHUB_ENV
+          echo "REGION=us-east-1" >> $GITHUB_ENV
+        elif [ "$ENVIRONMENT" = "staging" ]; then
+          echo "ORACLE_INSTANCE_NAME=STAG01" >> $GITHUB_ENV
+          echo "ORACLE_HOST=staging-oracle-01.company.com" >> $GITHUB_ENV
+          echo "ORACLE_VERSION=19c" >> $GITHUB_ENV
+          echo "ORACLE_EDITION=standard" >> $GITHUB_ENV
+          echo "DATACENTER=aws-us-west-2b" >> $GITHUB_ENV
+          echo "REGION=us-west-2" >> $GITHUB_ENV
+        fi
+        
+    - name: Build and test
+      run: |
+        echo "Building Oracle OTEL Demo with deployment info:"
+        echo "  Environment: $ENVIRONMENT"
+        echo "  Deployment ID: $DEPLOYMENT_ID"
+        echo "  Timestamp: $DEPLOYMENT_TIMESTAMP"
+        echo "  Oracle Instance: $ORACLE_INSTANCE_NAME"
+        echo "  Region: $REGION"
+        
+        # Build containers with deployment labels
+        docker compose build --build-arg DEPLOYMENT_ID=$DEPLOYMENT_ID \
+                            --build-arg DEPLOYMENT_TIMESTAMP=$DEPLOYMENT_TIMESTAMP \
+                            --build-arg ENVIRONMENT=$ENVIRONMENT
+        
+    - name: Deploy to environment
+      if: github.event_name == 'push'
+      run: |
+        echo "Deploying to $ENVIRONMENT environment..."
+        
+        # Create environment-specific .env file
+        cat > .env << EOF
+        # Auto-generated .env for $ENVIRONMENT deployment
+        
+        # Observe Configuration
+        OBSERVE_TENANT_ID=${{ secrets.OBSERVE_TENANT_ID }}
+        OBSERVE_STAGING_DOMAIN=collect.observe-staging.com
+        OBSERVE_RUM_BEARER_TOKEN=${{ secrets.OBSERVE_RUM_BEARER_TOKEN }}
+        OBSERVE_RUM_ENVIRONMENT=$ENVIRONMENT
+        OBSERVE_RUM_SERVICE_NAME=oracle-frontend-$ENVIRONMENT
+        OBSERVE_BACKEND_BEARER_TOKEN=${{ secrets.OBSERVE_BACKEND_BEARER_TOKEN }}
+        
+        # Oracle Database Configuration
+        ORACLE_PASSWORD=${{ secrets.ORACLE_PASSWORD }}
+        
+        # Oracle Instance Identification
+        ORACLE_INSTANCE_NAME=$ORACLE_INSTANCE_NAME
+        ORACLE_DATABASE_NAME=${ENVIRONMENT}DB
+        ORACLE_HOST=$ORACLE_HOST
+        ORACLE_PORT=1521
+        ORACLE_VERSION=$ORACLE_VERSION
+        ORACLE_EDITION=$ORACLE_EDITION
+        
+        # Environment & Deployment Configuration
+        ENVIRONMENT=$ENVIRONMENT
+        DATACENTER=$DATACENTER
+        REGION=$REGION
+        SERVICE_NAME=oracle-database
+        SERVICE_VERSION=$ORACLE_VERSION.0.0.0
+        DEPLOYMENT_ENVIRONMENT=$ENVIRONMENT
+        
+        # Deployment Tracking
+        DEPLOYMENT_ID=$DEPLOYMENT_ID
+        DEPLOYMENT_TIMESTAMP=$DEPLOYMENT_TIMESTAMP
+        EOF
+        
+        # Deploy with environment-specific configuration
+        docker compose up -d
+        
+    - name: Verify deployment
+      if: github.event_name == 'push'
+      run: |
+        echo "Verifying deployment..."
+        
+        # Wait for services to be ready
+        sleep 30
+        
+        # Check OTEL collector health
+        curl -f http://localhost:9464/metrics || exit 1
+        
+        # Check API health
+        curl -f http://localhost:8000/health || exit 1
+        
+        # Verify metrics are being collected with correct attributes
+        echo "Checking for deployment attributes in metrics..."
+        curl -s http://localhost:9464/metrics | grep -q "deployment_id=\"$DEPLOYMENT_ID\"" || echo "Warning: deployment_id not found in metrics"
+        curl -s http://localhost:9464/metrics | grep -q "environment=\"$ENVIRONMENT\"" || echo "Warning: environment not found in metrics"
+        
+        echo "Deployment verification completed!"
+        
+    - name: Notify deployment status
+      if: always() && github.event_name == 'push'
+      run: |
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ Deployment successful to $ENVIRONMENT"
+          echo "  Deployment ID: $DEPLOYMENT_ID"
+          echo "  Timestamp: $DEPLOYMENT_TIMESTAMP"
+          echo "  Environment: $ENVIRONMENT"
+          echo "  Oracle Instance: $ORACLE_INSTANCE_NAME"
+          echo "  Region: $REGION"
+        else
+          echo "❌ Deployment failed to $ENVIRONMENT"
+          echo "  Check logs for details"
+        fi
