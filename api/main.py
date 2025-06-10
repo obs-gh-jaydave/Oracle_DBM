@@ -92,6 +92,12 @@ def extract_correlation_from_request(request: Request):
     # Extract user action from headers or span attributes
     user_action = request.headers.get("x-user-action", "unknown")
     
+    # Set correlation_id as span attribute for APM visibility
+    if current_span:
+        current_span.set_attribute("correlation_id", correlation_id)
+        current_span.set_attribute("user_action", user_action)
+        current_span.set_attribute("observability.correlation_source", "rum_trace_context" if current_span.get_span_context().trace_id != 0 else "fallback")
+    
     return correlation_id, user_action
 
 def execute_with_correlation(cursor, sql, correlation_id, user_action=None, params=None):
@@ -142,14 +148,14 @@ async def get_employees(request: Request):
     # Extract correlation ID from RUM trace context
     correlation_id, user_action = extract_correlation_from_request(request)
     
-    # Add correlation ID to current span
+    # Add additional span attributes for this endpoint
     current_span = trace.get_current_span()
     if current_span:
-        current_span.set_attribute("correlation.id", correlation_id)
-        current_span.set_attribute("user.action", user_action)
         current_span.set_attribute("observability.layer", "api")
         current_span.set_attribute("database.operation", "select")
         current_span.set_attribute("oracle.native_correlation", True)
+        current_span.set_attribute("api.endpoint", "/api/employees")
+        current_span.set_attribute("api.method", "GET")
     
     connection = get_oracle_connection()
     cursor = connection.cursor()
@@ -223,15 +229,19 @@ async def get_high_salary_employees(request: Request):
     correlation_id, user_action = extract_correlation_from_request(request)
     if user_action == "unknown":
         user_action = "high-salary"
+        # Update the span attribute since we refined the user_action
+        current_span = trace.get_current_span()
+        if current_span:
+            current_span.set_attribute("user_action", user_action)
     
-    # Add correlation ID to current span
+    # Add additional span attributes for this endpoint
     current_span = trace.get_current_span()
     if current_span:
-        current_span.set_attribute("correlation.id", correlation_id)
-        current_span.set_attribute("user.action", user_action)
         current_span.set_attribute("observability.layer", "api")
         current_span.set_attribute("database.operation", "select")
         current_span.set_attribute("oracle.native_correlation", True)
+        current_span.set_attribute("api.endpoint", "/api/employees/high-salary")
+        current_span.set_attribute("api.method", "GET")
     
     connection = get_oracle_connection()
     cursor = connection.cursor()
@@ -301,15 +311,19 @@ async def get_salary_analytics(request: Request):
     correlation_id, user_action = extract_correlation_from_request(request)
     if user_action == "unknown":
         user_action = "salary-analytics"
+        # Update the span attribute since we refined the user_action
+        current_span = trace.get_current_span()
+        if current_span:
+            current_span.set_attribute("user_action", user_action)
     
-    # Add correlation ID to current span
+    # Add additional span attributes for this endpoint
     current_span = trace.get_current_span()
     if current_span:
-        current_span.set_attribute("correlation.id", correlation_id)
-        current_span.set_attribute("user.action", user_action)
         current_span.set_attribute("observability.layer", "api")
         current_span.set_attribute("database.operation", "select")
         current_span.set_attribute("oracle.native_correlation", True)
+        current_span.set_attribute("api.endpoint", "/api/analytics/salary-stats")
+        current_span.set_attribute("api.method", "GET")
     
     connection = get_oracle_connection()
     cursor = connection.cursor()

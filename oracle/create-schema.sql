@@ -12,7 +12,7 @@ END;
 /
 
 -- Create the testuser with proper privileges
-CREATE USER testuser IDENTIFIED BY "testpass"
+CREATE USER testuser IDENTIFIED BY "YourSecurePassword123"
     DEFAULT TABLESPACE USERS
     TEMPORARY TABLESPACE TEMP;
 

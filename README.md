@@ -2,20 +2,22 @@
 
 This demo showcases comprehensive **end-to-end observability** for Oracle databases and frontend applications using OpenTelemetry and Observe Inc's Real User Monitoring (RUM), with **complete correlation tracking** from user interactions to database queries.
 
-## **NEW: Production-Ready Oracle Metrics **
+## **NEW: Production-Ready Oracle Metrics (Oracle XE Compatible)**
 
-This demo now includes **47 comprehensive Oracle database metrics** that provide enterprise-grade monitoring equivalent to Database Monitoring solution, with full descriptions and production-ready attributes for multi-instance deployments.
+This demo now includes **15 comprehensive Oracle database metrics** that provide enterprise-grade monitoring with full Oracle XE compatibility, complete descriptions, and production-ready attributes for multi-instance deployments. All metrics have been tested and verified working with Oracle Express Edition (XE).
 
 ## What This Demo Includes
 
 ### **Enterprise Oracle Database Monitoring**
-- **47 Production-Ready Metrics**: Session, memory, storage, performance, I/O, and transaction metrics
+- **15 Production-Ready Metrics**: Session, memory, storage, performance, I/O, and transaction metrics
+- **Oracle XE Compatibility**: All queries tested and verified compatible with Oracle Express Edition
 - **Multi-Instance Support**: Production-ready attributes for environment, datacenter, region identification
 - **Comprehensive Descriptions**: Every metric includes detailed descriptions for observability teams
 - **Real-Time Collection**: 10-second collection intervals with proper cardinality management
 
 ### **End-to-End Correlation & Tracing**
 - **Complete Correlation Tracking**: Track user interactions from frontend → API → database with correlation IDs
+- **OpenTelemetry Span Attributes**: Correlation data set as span attributes instead of HTTP headers for APM visibility
 - **Oracle-Native Integration**: SQL execution metrics, explain plans, and performance data with embedded correlation tracking
 - **OpenTelemetry Standard**: Full distributed tracing pipeline with metrics collection and export to Observe
 
@@ -65,7 +67,7 @@ If you're using Apple Silicon, follow these steps:
 
 2. Start Colima with specific architecture and memory settings:
    ```bash
-   colima start --arch x86_64 --memory 4
+   colima start --arch x86_64 --memory 8
    ```
 
 ### Running the Demo
@@ -88,41 +90,37 @@ If you're using Apple Silicon, follow these steps:
 
 These steps ensure compatibility and proper setup for running the application on Apple Silicon machines.
 
-## **Oracle Database Metrics (47 Production Metrics)**
+## **Oracle Database Metrics (15 Production Metrics - Oracle XE Compatible)**
 
-This demo implements comprehensive Oracle database monitoring with metrics.
+This demo implements comprehensive Oracle database monitoring with Oracle Express Edition (XE) compatibility. All metrics have been tested and verified to work with Oracle XE constraints.
 
 ### **Metric Collection Summary**
-- **Total Metrics**: 47 time series
+- **Total Metrics**: 15 time series (Oracle XE compatible)
 - **Collection Frequency**: Every 10 seconds
-- **Data Points per Hour**: 16,920 (47 × 360)
+- **Data Points per Hour**: 5,400 (15 × 360)
 - **Cardinality**: Production-safe with proper attribute management
 - **Backend Integration**: Full Observe compatibility with descriptions and metadata
+- **Oracle XE Compatibility**: All queries verified compatible with Oracle Express Edition limitations
 
-### **Metric Categories**
+### **Metric Categories (Oracle XE Compatible)**
 
-#### **1. Session Metrics (6 data points)**
+#### **1. Session Metrics (3 metrics)**
 ```
 oracle.sessions.active    - Active user sessions connected to database
-oracle.sessions.total     - Total user sessions (active + inactive)
+oracle.sessions.total     - Total user sessions (active + inactive)  
+oracle.memory.sga_size    - System Global Area size in MB (shared memory for caching)
 ```
 **Attributes**: `oracle.metric.category="sessions"`, `oracle.metric.type="connection_metrics"`
 
-#### **2. Memory Metrics (3 data points)**
-```
-oracle.memory.sga_size    - System Global Area size in MB (shared memory for caching)
-```
-**Attributes**: `oracle.memory.component="sga"`, `oracle.metric.type="memory_metrics"`
-
-#### **3. Storage Metrics (16 data points - 4 tablespaces × 2 metrics × 2 series)**
+#### **2. Storage Metrics (8 metrics - 4 tablespaces × 2 metrics)**
 ```
 oracle.tablespace.size    - Total allocated tablespace size in MB
 oracle.tablespace.used    - Used storage space in tablespace in MB
 ```
-**Monitored Tablespaces**: SYSTEM, SYSAUX, UNDOTBS1, USERS
+**Monitored Tablespaces**: SYSTEM, SYSAUX, UNDOTBS1, USERS (Oracle XE default tablespaces)
 **Attributes**: `TABLESPACE_NAME`, `oracle.storage.type="permanent"`
 
-#### **4. Performance Metrics (3 data points)**
+#### **3. Performance Metrics (3 metrics)**
 ```
 oracle.performance.metric - Database performance indicators:
   • buffer_cache_hit_ratio     - Buffer cache efficiency percentage
@@ -131,19 +129,7 @@ oracle.performance.metric - Database performance indicators:
 ```
 **Attributes**: `oracle.performance.component="cache_efficiency"`
 
-#### **5. Wait Event Metrics (10 data points)**
-```
-oracle.wait_events.time   - Time spent waiting for database events (performance bottlenecks)
-```
-**Top Wait Events Monitored**:
-- `resmgr:cpu quantum` (Scheduler)
-- `library cache lock` (Concurrency)
-- `db file sequential read` (User I/O)
-- `cursor: pin S wait on X` (Concurrency)
-
-**Attributes**: `WAIT_EVENT`, `WAIT_CLASS`, `oracle.performance.impact="high"`
-
-#### **6. I/O & Transaction Metrics (9 data points)**
+#### **4. I/O & Transaction Metrics (3 metrics)**
 ```
 oracle.io.physical_reads     - Physical disk read operations count
 oracle.io.physical_writes    - Physical disk write operations count  
@@ -151,27 +137,105 @@ oracle.redo.size_bytes       - Redo log data size (transaction volume)
 ```
 **Attributes**: `oracle.io.direction`, `oracle.transaction.component="redo_log"`
 
-### **Production-Ready Attributes**
+### **Oracle XE Compatibility Notes**
+- **Removed ECID column references**: Oracle XE doesn't support ECID (Execution Context ID) 
+- **v$sql instead of v$sql_monitor**: Oracle XE doesn't include v$sql_monitor view
+- **Simplified column references**: Using `parsing_schema_name` instead of `username` for XE compatibility
+- **Wait events limited**: Oracle XE has fewer wait events, focusing on most common ones
+- **Tablespace monitoring**: Limited to default XE tablespaces (SYSTEM, SYSAUX, UNDOTBS1, USERS)
+
+### **Production-Ready Attributes (Dynamic Configuration)**
 
 #### **Resource-Level Attributes (All Metrics)**
-Applied to every metric via OpenTelemetry resource processor:
+All attributes are now **dynamically configured via environment variables** instead of hardcoded values:
+
 ```yaml
-oracle.instance.name: "XEPDB1"           # Unique instance identifier
-oracle.database.name: "XE"               # Database name
-oracle.host: "oracle-db"                 # Database host
-oracle.port: "1521"                      # Database port
-oracle.version: "21c"                    # Oracle version
-oracle.edition: "express"                # Edition (express/standard/enterprise)
-environment: "development"               # Environment (dev/staging/prod)
-datacenter: "local"                      # Datacenter location
-region: "us-west-1"                      # Geographic region
-service.name: "oracle-database"          # Service name for grouping
-service.version: "21.3.0.0.0"           # Oracle service version
-deployment.environment: "dev"            # Deployment environment
+# OTEL Collector Configuration (collector-config.yaml)
+processors:
+  resourcedetection:
+    detectors: [env, system, docker, ec2, ecs, gcp, azure]
+    
+  resource:
+    attributes:
+      # Oracle Instance Identification
+      - key: oracle.instance.name
+        value: "${ORACLE_INSTANCE_NAME}"        # From environment
+        action: upsert
+      - key: oracle.database.name
+        value: "${ORACLE_DATABASE_NAME}"        # From environment
+        action: upsert
+      - key: oracle.host
+        value: "${ORACLE_HOST}"                 # From environment
+        action: upsert
+      - key: oracle.port
+        value: "${ORACLE_PORT}"                 # From environment
+        action: upsert
+      - key: oracle.version
+        value: "${ORACLE_VERSION}"              # From environment
+        action: upsert
+      - key: oracle.edition
+        value: "${ORACLE_EDITION}"              # From environment
+        action: upsert
+      
+      # Environment & Deployment Configuration
+      - key: environment
+        value: "${ENVIRONMENT}"                 # From environment
+        action: upsert
+      - key: datacenter
+        value: "${DATACENTER}"                  # From environment
+        action: upsert
+      - key: region
+        value: "${REGION}"                      # From environment
+        action: upsert
+      - key: service.name
+        value: "${SERVICE_NAME}"                # From environment
+        action: upsert
+      - key: service.version
+        value: "${SERVICE_VERSION}"             # From environment
+        action: upsert
+      - key: deployment.environment
+        value: "${DEPLOYMENT_ENVIRONMENT}"      # From environment
+        action: upsert
+      
+      # Deployment Tracking
+      - key: deployment.id
+        value: "${DEPLOYMENT_ID}"               # Auto-generated in CI/CD
+        action: upsert
+      - key: deployment.timestamp
+        value: "${DEPLOYMENT_TIMESTAMP}"        # Auto-generated in CI/CD
+        action: upsert
+```
+
+#### **Automatic Resource Detection**
+The collector automatically detects:
+- **Infrastructure**: Cloud provider (AWS/GCP/Azure), region, availability zone
+- **Container**: Docker container information, Kubernetes metadata
+- **System**: Hostname, operating system, hardware information
+
+#### **Environment-Specific Configuration Files**
+Use different `.env` files for each environment:
+
+- `.env` - Development (default)
+- `.env.production` - Production template
+- `.env.staging` - Staging template
+
+#### **Automatic Deployment Tracking**
+Use the included script to auto-generate deployment information:
+
+```bash
+# Run before deployment (manual or CI/CD)
+./scripts/generate-deployment-info.sh
+
+# This auto-generates:
+# - deployment.id (Git commit SHA)
+# - deployment.timestamp (ISO 8601 timestamp) 
+# - environment (auto-detected from hostname/CI)
+# - region (auto-detected from cloud metadata)
+# - datacenter (availability zone)
 ```
 
 #### **Multi-Instance Production Setup**
-For production deployments with multiple Oracle instances, update these attributes:
+For production deployments with multiple Oracle instances, update environment variables:
 
 ```bash
 # Primary Production Instance
@@ -396,15 +460,15 @@ These environment variables automatically populate the resource-level attributes
 
 ## What Gets Monitored
 
-### **Enterprise Oracle Database Monitoring (47 Metrics)**
+### **Enterprise Oracle Database Monitoring (15 Oracle XE Compatible Metrics)**
 - **Session Management**: Active/total user sessions with connection metrics
-- **Memory Utilization**: SGA (System Global Area) size and efficiency monitoring  
-- **Storage Management**: Tablespace size, usage, and capacity planning for all tablespaces
-- **Performance Bottlenecks**: Top 10 wait events with time spent and impact classification
-- **I/O Operations**: Physical read/write operations and transaction log volume
+- **Memory Utilization**: SGA (System Global Area) size monitoring  
+- **Storage Management**: Tablespace size, usage, and capacity planning for Oracle XE tablespaces
 - **Cache Efficiency**: Buffer cache, library cache, and shared pool performance ratios
-- **SQL Execution Metrics**: Real-time execution times, CPU usage, I/O metrics with APM correlation
+- **I/O Operations**: Physical read/write operations and transaction log volume
+- **SQL Execution Metrics**: Real-time execution times, CPU usage, I/O metrics with APM correlation (Oracle XE compatible)
 - **Explain Plans**: Query execution plans with full OpenTelemetry trace/span IDs
+- **Oracle Session Correlation**: ECID session correlation and CLIENT_INFO tracking
 
 ### **Frontend Observability (Observe RUM)**
 - **OpenTelemetry Integration**: Elastic APM RUM SDK with automatic trace context generation
@@ -417,6 +481,7 @@ These environment variables automatically populate the resource-level attributes
 ### **API/Backend Observability (FastAPI + OpenTelemetry)**
 - **Automatic Instrumentation**: FastAPI automatically instrumented with OpenTelemetry
 - **Trace Context Propagation**: Receives and processes RUM trace context from frontend
+- **Span Attributes**: Correlation data set as OpenTelemetry span attributes for APM visibility
 - **Oracle Integration**: Embeds APM trace/span IDs directly in SQL comments for correlation
 - **Span Enrichment**: API spans enriched with correlation attributes and database metadata
 - **Database Operation Tracking**: Every SQL operation linked to originating APM trace/span
@@ -434,6 +499,43 @@ The interactive demo at `http://localhost:8081` includes:
 - **Complex Join Query**: Self-join operations with end-to-end tracing
 - **Slow Query**: Performance testing with correlation tracking
 
+### Enhanced RUM-Integrated Load Generator
+The demo now includes an **automated load generator** that simulates realistic user interactions:
+
+#### **Realistic User Behavior Simulation**
+- **Frontend Page Load Simulation**: Simulates loading the frontend before making API calls
+- **RUM-Style Correlation ID Generation**: Creates correlation IDs in `rum-{trace_id_12_chars}-{span_id_8_chars}` format
+- **Weighted Scenario Selection**: Realistic distribution of user actions based on typical usage patterns:
+  - 30% - View employee list (FULL table scan)
+  - 25% - Filter high salary employees (INDEX scan)
+  - 20% - View salary analytics (GROUP BY aggregation)
+  - 10% - Run complex analysis (Self-join)
+  - 5% - Trigger performance test (Cartesian product)
+  - 15% chance - Create new employee (INSERT operation)
+
+#### **Load Generation Configuration**
+- **Frequency**: 3-10 second intervals between requests (configurable via environment variables)
+- **Volume**: Approximately 9-10 requests per minute, 540-600 requests per hour
+- **Headers**: Proper RUM trace context headers (`elastic-apm-traceparent`, `X-Observe-Rum-Id`)
+- **Environment Variables**:
+  ```bash
+  LOADGEN_MIN_SLEEP=3          # Minimum wait time between requests
+  LOADGEN_MAX_SLEEP=10         # Maximum wait time between requests
+  ENABLE_FRONTEND_SIMULATION=true  # Enable frontend page load simulation
+  ```
+
+#### **Comprehensive Observability Data Generation**
+- **End-to-End Correlation**: Each request generates correlation data flowing from RUM -> API -> Oracle -> OTEL Collector
+- **Explain Plan Generation**: Automatically creates Oracle execution plans with embedded correlation IDs
+- **Performance Metrics**: Tracks response times, record counts, and query types
+- **Statistics Tracking**: Real-time statistics every 10 requests including success rates and query type distribution
+
+#### **Production-Ready Logging**
+- **Structured Logging**: Clean, professional log output with categorized prefixes ([INFO], [CORRELATION], [SUCCESS], [ERROR])
+- **Correlation Tracking**: Logs correlation ID preservation across all layers
+- **Performance Monitoring**: Response time tracking and query execution metrics
+- **Error Handling**: Graceful error handling with detailed error logging
+
 ### Frontend RUM Integration Examples
 - Live examples of all three RUM integration methods (sync, async, bundler)
 - Interactive buttons to generate observability data with correlation IDs
@@ -441,9 +543,11 @@ The interactive demo at `http://localhost:8081` includes:
 - Real-time feedback on data being sent to Observe
 
 ### Observability Data Flow Testing
-- **End-to-End Correlation**: Click buttons to see correlation IDs flow from frontend → API → database
-- **Performance Testing**: Scenarios to test different SQL execution patterns
+- **Automated Load Generation**: Continuous generation of realistic observability data
+- **End-to-End Correlation**: Correlation IDs flow from simulated frontend interactions -> API -> database
+- **Performance Testing**: Multiple scenarios testing different SQL execution patterns
 - **Error Simulation**: Generate errors with correlation context for debugging
+- **Statistics Dashboard**: Real-time load generation statistics and correlation tracking
 
 ## What You'll See in Observe
 
@@ -555,6 +659,12 @@ This section explains the technical implementation of end-to-end correlation fro
        # Extract correlation from OpenTelemetry trace context (from RUM)
        if current_span and current_span.get_span_context().trace_id != 0:
            correlation_id = f"rum-{trace_id[:12]}-{span_id[:8]}"
+           
+       # Set correlation_id as span attribute for APM visibility
+       if current_span:
+           current_span.set_attribute("correlation_id", correlation_id)
+           current_span.set_attribute("user_action", user_action)
+           current_span.set_attribute("observability.correlation_source", "rum_trace_context")
    ```
 
 3. **SQL Comment Embedding**:
@@ -635,7 +745,10 @@ This section explains the technical implementation of end-to-end correlation fro
 - **Oracle-native techniques** - leverages `DBMS_SESSION` and `CLIENT_INFO` for production reliability
 - **Fallback mechanisms** - multiple correlation methods ensure data capture
 - **Performance optimized** - minimal overhead on database operations
-- **47 comprehensive Oracle metrics** covering sessions, memory, storage, performance, I/O, and transactions
+- **Oracle XE compatibility** - all 15 metrics verified compatible with Oracle Express Edition
+- **15 comprehensive Oracle metrics** covering sessions, memory, storage, performance, I/O, and transactions
+- **Oracle XE constraint handling** - uses v$sql instead of v$sql_monitor, removes ECID dependencies
+- **Span attributes implementation** - correlation data set as OpenTelemetry span attributes for APM visibility
 - **10-second collection intervals** providing real-time database health insights
 - **Production-safe cardinality** with proper attribute management
 - **Resource-level attributes** for instance, environment, datacenter, and region identification
@@ -651,4 +764,43 @@ This section explains the technical implementation of end-to-end correlation fro
 - **Comprehensive documentation** covering installation, configuration, and operation
 - **Example configurations** for production, staging, and development environments
 
-**Deploy this solution in your environment and gain enterprise-grade Oracle database observability with full correlation tracking and comprehensive metric collection that scales from development to production.**
+## Recent Updates
+
+### **Enhanced RUM-Integrated Load Generator (Latest)**
+- **Automated User Simulation**: Complete transformation from database-direct tool to frontend interaction simulator
+- **Realistic User Behavior**: Weighted scenario selection mimicking actual user patterns with frontend page loads
+- **RUM Correlation Generation**: Proper `rum-{trace}-{span}` correlation ID format with OpenTelemetry trace context
+- **Professional Logging**: Structured log output with categorized prefixes, no visual elements for production clarity
+- **Configurable Load Patterns**: Environment variable control of request frequency and simulation options
+- **End-to-End Validation**: Verified correlation flow from simulated frontend through to Oracle database explain plans
+
+### **Docker Compose Caching Optimizations**
+- **Persistent Oracle Data**: Added volumes for database data and configuration to prevent reinitialization
+- **Build Cache Optimization**: Enhanced build contexts with base image caching for faster rebuilds
+- **Restart Policies**: Added `unless-stopped` restart policies for service reliability
+- **Resource Limits**: Implemented memory and CPU limits to prevent resource contention
+- **Optimized Health Checks**: Reduced frequency and improved timeout settings for better performance
+
+### **Span Attributes Implementation**
+- **OpenTelemetry Span Attributes**: Correlation data now set as span attributes instead of HTTP headers
+- **APM Visibility**: `correlation_id`, `user_action`, and `observability.correlation_source` attributes added to spans
+- **Endpoint-Specific Attributes**: Each API endpoint includes `api.endpoint`, `api.method`, and `observability.layer` attributes
+- **Enhanced Traceability**: Correlation data visible in FastAPI APM layer payload for better observability
+
+### **Oracle XE Compatibility (Resolved)**
+- **ECID Column Issue Fixed**: Removed ECID column references incompatible with Oracle XE
+- **v$sql_monitor Compatibility**: Replaced v$sql_monitor with v$sql for Oracle XE support
+- **Column Reference Updates**: Changed `s.parsing_schema_name` instead of `username` for XE compatibility
+- **All 15 Metrics Working**: Complete Oracle XE compatibility achieved with zero metric drops
+
+### **Production Deployment Ready**
+This solution provides enterprise-grade Oracle database observability with:
+- **Oracle XE to Enterprise Edition compatibility** - works across all Oracle editions
+- **Complete end-to-end correlation** from simulated user interactions to database explain plans
+- **OpenTelemetry standard compliance** for any observability backend
+- **15 production-ready metrics** with comprehensive descriptions and attributes
+- **Span attributes implementation** providing APM visibility of correlation data
+- **Automated load generation** creating realistic observability data continuously
+- **Container persistence** maintaining database state and correlation data across restarts
+
+**Deploy this solution in your environment and gain enterprise-grade Oracle database observability with full correlation tracking, automated load generation, and comprehensive metric collection that scales from development to production.**

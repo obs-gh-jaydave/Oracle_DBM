@@ -1,0 +1,219 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: oracle-monitoring
+  labels:
+    app: otel-collector
+    environment: production
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        environment: production
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.128.0
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 4318
+          name: otlp-http
+        - containerPort: 9464
+          name: prometheus
+        env:
+        # Observe Configuration (from secrets)
+        - name: OBSERVE_TENANT_ID
+          valueFrom:
+            secretKeyRef:
+              name: observe-credentials
+              key: tenant-id
+        - name: OBSERVE_BACKEND_BEARER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: observe-credentials
+              key: backend-bearer-token
+        - name: ORACLE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: oracle-credentials
+              key: password
+              
+        # Oracle Instance Identification (from ConfigMap)
+        - name: ORACLE_INSTANCE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: oracle-config
+              key: instance-name
+        - name: ORACLE_DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: oracle-config
+              key: database-name
+        - name: ORACLE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: oracle-config
+              key: host
+        - name: ORACLE_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: oracle-config
+              key: port
+        - name: ORACLE_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: oracle-config
+              key: version
+        - name: ORACLE_EDITION
+          valueFrom:
+            configMapKeyRef:
+              name: oracle-config
+              key: edition
+              
+        # Environment & Deployment (auto-detected + ConfigMap)
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: deployment-config
+              key: environment
+        - name: DATACENTER
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName  # Use node name as datacenter
+        - name: REGION
+          valueFrom:
+            configMapKeyRef:
+              name: deployment-config
+              key: region
+        - name: SERVICE_NAME
+          value: "oracle-database"
+        - name: SERVICE_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: oracle-config
+              key: version
+        - name: DEPLOYMENT_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: deployment-config
+              key: environment
+              
+        # Deployment Tracking (auto-detected from pod)
+        - name: DEPLOYMENT_ID
+          valueFrom:
+            configMapKeyRef:
+              name: deployment-config
+              key: deployment-id
+        - name: DEPLOYMENT_TIMESTAMP
+          valueFrom:
+            configMapKeyRef:
+              name: deployment-config
+              key: deployment-timestamp
+              
+        # Additional Kubernetes-specific attributes
+        - name: K8S_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: K8S_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+              
+        volumeMounts:
+        - name: config
+          mountPath: /etc/otel-collector-config.yaml
+          subPath: collector-config.yaml
+          readOnly: true
+        command: ["--config=/etc/otel-collector-config.yaml"]
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+            
+      volumes:
+      - name: config
+        configMap:
+          name: otel-collector-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-config
+  namespace: oracle-monitoring
+data:
+  instance-name: "PROD01"
+  database-name: "PRODDB"
+  host: "prod-oracle-01.company.com"
+  port: "1521"
+  version: "19c"
+  edition: "enterprise"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deployment-config
+  namespace: oracle-monitoring
+data:
+  environment: "production"
+  region: "us-east-1"
+  deployment-id: "v1.2.3-abc123"  # Should be updated by CI/CD
+  deployment-timestamp: "2024-01-01T00:00:00Z"  # Should be updated by CI/CD
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: observe-credentials
+  namespace: oracle-monitoring
+type: Opaque
+data:
+  tenant-id: WU9VUl9URU5BTlRfSUQK  # base64 encoded
+  backend-bearer-token: WU9VUl9CQUNLRU5EX1RPS0VOCg==  # base64 encoded
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oracle-credentials
+  namespace: oracle-monitoring
+type: Opaque
+data:
+  password: WU9VUl9PUkFDTEVfUEFTU1dPUkQK  # base64 encoded
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: oracle-monitoring
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+  - name: prometheus
+    port: 9464
+    targetPort: 9464
