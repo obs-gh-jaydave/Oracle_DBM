@@ -787,12 +787,6 @@ This section explains the technical implementation of end-to-end correlation fro
 - **Endpoint-Specific Attributes**: Each API endpoint includes `api.endpoint`, `api.method`, and `observability.layer` attributes
 - **Enhanced Traceability**: Correlation data visible in FastAPI APM layer payload for better observability
 
-### **Oracle XE Compatibility (Resolved)**
-- **ECID Column Issue Fixed**: Removed ECID column references incompatible with Oracle XE
-- **v$sql_monitor Compatibility**: Replaced v$sql_monitor with v$sql for Oracle XE support
-- **Column Reference Updates**: Changed `s.parsing_schema_name` instead of `username` for XE compatibility
-- **All 15 Metrics Working**: Complete Oracle XE compatibility achieved with zero metric drops
-
 ### **Production Deployment Ready**
 This solution provides enterprise-grade Oracle database observability with:
 - **Oracle XE to Enterprise Edition compatibility** - works across all Oracle editions
