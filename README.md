@@ -34,24 +34,6 @@ This demo now includes **40+ comprehensive Oracle database metrics** and **criti
 
 **Total Log Volume per Instance: ~235 KB/hour = ~5.6 MB/day**
 
-### **Production Cost Estimates (Observe/Similar Platforms)**
-
-**Monthly Estimates:**
-- **Single Instance**: 504,000 DPH × 24h × 30d = **~363M data points/month + ~170MB logs**
-- **10 Instances**: **~3.6B data points/month + ~1.7GB logs**
-- **50 Instances**: **~18B data points/month + ~8.5GB logs**
-
-**Typical Observability Platform Costs:**
-- **Metrics**: $0.10-0.30 per 1M data points/month
-- **Logs**: $2-5 per GB/month  
-- **Traces**: $1-3 per GB/month
-
-**Example Monthly Costs (10 Oracle Instances):**
-- **Metrics**: 3.6B points × $0.20/1M = **~$720/month**
-- **Logs**: 1.7GB × $3/GB = **~$5/month**
-- **Traces**: 6GB × $2/GB = **~$12/month**
-- **Total**: **~$737/month for 10 Oracle instances**
-
 ## What This Demo Includes
 
 ### Multi-Instance Oracle Architecture
@@ -113,7 +95,7 @@ If you're using Apple Silicon, follow these steps:
 
 ### Running the Demo
 
-**🚀 Fully Automated Setup - Zero Manual Configuration Required!**
+**Fully Automated Setup - Zero Manual Configuration Required!**
 
 1. **Clone and start** (everything is automated):
    ```bash
@@ -473,24 +455,12 @@ All Oracle metrics appear with comprehensive organization:
 ## Production Deployment Ready
 
 This solution provides enterprise-grade Oracle database observability with:
-- **✅ Multi-Instance Architecture**: 3 Oracle databases with differentiated monitoring
-- **✅ 40+ Production Metrics**: Comprehensive DBA monitoring with critical alerting
-- **✅ Advanced Performance Logs**: Expensive SQL, blocking sessions, execution plans
-- **✅ Complete Correlation**: OpenTelemetry trace/span correlation throughout
-- **✅ Oracle XE to Enterprise Compatibility**: Works across all Oracle editions
-- **✅ Zero-Configuration Setup**: Automated TESTUSER and schema creation
-- **✅ Production Cost Estimates**: Clear data volume and cost projections
-- **✅ Automated Load Generation**: Realistic multi-instance workload simulation
-- **✅ Container Persistence**: Database state maintained across restarts
-
-**Deploy this solution in your environment and gain enterprise-grade Oracle database observability with complete correlation tracking, critical alerting, and comprehensive DBA insights that scale from development to production.**
-
-## Data Volume Summary
-
-**Per Oracle Instance (Production Workload):**
-- **350 DPM** (Data Points per Minute)
-- **21,000 DPH** (Data Points per Hour)  
-- **235 KB/hour** of logs and traces
-- **Monthly**: ~363M data points + ~170MB logs
-
-**Cost-effective observability** with comprehensive coverage providing everything DBAs need for production Oracle monitoring, performance optimization, and troubleshooting.
+- **Multi-Instance Architecture**: 3 Oracle databases with differentiated monitoring
+- **40+ Production Metrics**: Comprehensive DBA monitoring with critical alerting
+- **Advanced Performance Logs**: Expensive SQL, blocking sessions, execution plans
+- **Complete Correlation**: OpenTelemetry trace/span correlation throughout
+- **Oracle XE to Enterprise Compatibility**: Works across all Oracle editions
+- **Zero-Configuration Setup**: Automated TESTUSER and schema creation
+- **Production Cost Estimates**: Clear data volume and cost projections
+- **Automated Load Generation**: Realistic multi-instance workload simulation
+- **Container Persistence**: Database state maintained across restarts
