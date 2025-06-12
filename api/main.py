@@ -51,21 +51,73 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Oracle connection settings
-ORACLE_HOST = os.getenv("ORACLE_HOST", "oracle-db")
-ORACLE_PORT = int(os.getenv("ORACLE_PORT", "1521"))
-ORACLE_SID = os.getenv("ORACLE_SID", "XEPDB1")
+# Oracle connection settings - Multi-instance support
 ORACLE_USER = os.getenv("ORACLE_USER", "testuser")
 ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD", "testpass")
+ORACLE_SID = os.getenv("ORACLE_SID", "XEPDB1")
 
-conn_str = f"{ORACLE_USER}/{ORACLE_PASSWORD}@{ORACLE_HOST}:{ORACLE_PORT}/{ORACLE_SID}"
+# Multi-instance Oracle configuration for production-like environment
+ORACLE_INSTANCES = {
+    'primary': {
+        'host': 'oracle-db-primary',
+        'port': 1521,
+        'service': 'oracle-database-primary',
+        'tier': 'production',
+        'workload_type': 'OLTP',
+        'max_connections': 100
+    },
+    'secondary': {
+        'host': 'oracle-db-secondary', 
+        'port': 1522,
+        'service': 'oracle-database-secondary',
+        'tier': 'analytics',
+        'workload_type': 'DSS',  # Decision Support System
+        'max_connections': 50
+    },
+    'legacy': {
+        'host': 'oracle-db-legacy',
+        'port': 1523, 
+        'service': 'oracle-database-legacy',
+        'tier': 'reporting',
+        'workload_type': 'REPORTING',
+        'max_connections': 30
+    }
+}
 
-def get_oracle_connection():
-    """Get Oracle database connection"""
+def get_oracle_connection(instance_type='primary'):
+    """Get Oracle database connection for specified instance"""
     try:
-        return oracledb.connect(conn_str, mode=oracledb.DEFAULT_AUTH)
+        instance_config = ORACLE_INSTANCES.get(instance_type, ORACLE_INSTANCES['primary'])
+        conn_str = f"{ORACLE_USER}/{ORACLE_PASSWORD}@{instance_config['host']}:{instance_config['port']}/{ORACLE_SID}"
+        connection = oracledb.connect(conn_str, mode=oracledb.DEFAULT_AUTH)
+        
+        # Set session parameters based on workload type
+        cursor = connection.cursor()
+        if instance_config['workload_type'] == 'OLTP':
+            cursor.execute("ALTER SESSION SET OPTIMIZER_MODE = FIRST_ROWS")
+        elif instance_config['workload_type'] == 'DSS':
+            cursor.execute("ALTER SESSION SET OPTIMIZER_MODE = ALL_ROWS")
+            cursor.execute("ALTER SESSION SET SORT_AREA_SIZE = 67108864")  # 64MB for analytics
+        elif instance_config['workload_type'] == 'REPORTING':
+            cursor.execute("ALTER SESSION SET OPTIMIZER_MODE = ALL_ROWS")
+            cursor.execute("ALTER SESSION SET HASH_AREA_SIZE = 33554432")  # 32MB for reporting
+        
+        cursor.close()
+        return connection
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database connection failed for {instance_type}: {str(e)}")
+
+def select_instance_for_workload(workload_type='OLTP'):
+    """Select optimal Oracle instance based on workload type"""
+    workload_mapping = {
+        'OLTP': 'primary',
+        'analytics': 'secondary', 
+        'reporting': 'legacy',
+        'high-salary': 'primary',  # Transactional lookup
+        'salary-analytics': 'secondary',  # Analytics workload
+        'employee-reports': 'legacy'  # Reporting workload
+    }
+    return workload_mapping.get(workload_type, 'primary')
 
 def extract_correlation_from_request(request: Request):
     """Extract correlation ID from RUM trace context or generate fallback"""
@@ -157,8 +209,15 @@ async def get_employees(request: Request):
         current_span.set_attribute("api.endpoint", "/api/employees")
         current_span.set_attribute("api.method", "GET")
     
-    connection = get_oracle_connection()
+    # Route to appropriate Oracle instance based on workload
+    instance_type = select_instance_for_workload('OLTP')
+    connection = get_oracle_connection(instance_type)
     cursor = connection.cursor()
+    
+    # Add instance information to span
+    if current_span:
+        current_span.set_attribute("database.instance.type", instance_type)
+        current_span.set_attribute("database.instance.config", ORACLE_INSTANCES[instance_type]['service'])
     
     try:
         # Get OpenTelemetry trace context for embedding in SQL
@@ -243,8 +302,15 @@ async def get_high_salary_employees(request: Request):
         current_span.set_attribute("api.endpoint", "/api/employees/high-salary")
         current_span.set_attribute("api.method", "GET")
     
-    connection = get_oracle_connection()
+    # Route to primary instance for transactional queries
+    instance_type = select_instance_for_workload('high-salary')
+    connection = get_oracle_connection(instance_type)
     cursor = connection.cursor()
+    
+    # Add instance information to span
+    if current_span:
+        current_span.set_attribute("database.instance.type", instance_type)
+        current_span.set_attribute("database.instance.config", ORACLE_INSTANCES[instance_type]['service'])
     
     try:
         # Get OpenTelemetry trace context for embedding in SQL
@@ -325,13 +391,29 @@ async def get_salary_analytics(request: Request):
         current_span.set_attribute("api.endpoint", "/api/analytics/salary-stats")
         current_span.set_attribute("api.method", "GET")
     
-    connection = get_oracle_connection()
+    # Route to analytics instance for aggregation queries
+    instance_type = select_instance_for_workload('salary-analytics')
+    connection = get_oracle_connection(instance_type)
     cursor = connection.cursor()
     
+    # Add instance information to span
+    if current_span:
+        current_span.set_attribute("database.instance.type", instance_type)
+        current_span.set_attribute("database.instance.config", ORACLE_INSTANCES[instance_type]['service'])
+    
     try:
-        # Clean SQL without embedded correlation ID comments
-        query = """
-        SELECT /*+ FULL(e) */ 
+        # Get OpenTelemetry trace context for embedding in SQL
+        current_span_for_sql = trace.get_current_span()
+        trace_id = "unknown"
+        span_id = "unknown"
+        
+        if current_span_for_sql and current_span_for_sql.get_span_context().trace_id != 0:
+            trace_id = format(current_span_for_sql.get_span_context().trace_id, '032x')
+            span_id = format(current_span_for_sql.get_span_context().span_id, '016x')
+        
+        # SQL with embedded OpenTelemetry trace context and correlation ID for analytics workload
+        query = f"""
+        SELECT /*+ FULL(e) PARALLEL(e,2) */ /* correlation_id={correlation_id} user_action={user_action} otel_trace_id={trace_id} otel_span_id={span_id} */
             TRUNC(hire_date, 'MONTH') as hire_month,
             COUNT(*) as employee_count,
             AVG(salary) as avg_salary,
@@ -383,7 +465,9 @@ async def get_salary_analytics(request: Request):
 @app.post("/api/employees")
 async def create_employee(employee_data: dict):
     """Create new employee - triggers INSERT with possible index updates"""
-    connection = get_oracle_connection()
+    # Route to primary instance for transactional operations
+    instance_type = select_instance_for_workload('OLTP')
+    connection = get_oracle_connection(instance_type)
     cursor = connection.cursor()
     
     try:
@@ -424,7 +508,9 @@ async def create_employee(employee_data: dict):
 @app.get("/api/complex-query")
 async def run_complex_query():
     """Run complex query - triggers self-join with multiple operations"""
-    connection = get_oracle_connection()
+    # Route to secondary instance for complex analytical queries
+    instance_type = select_instance_for_workload('analytics')
+    connection = get_oracle_connection(instance_type)
     cursor = connection.cursor()
     
     try:
@@ -461,7 +547,9 @@ async def run_complex_query():
 @app.get("/api/slow-query")
 async def run_slow_query():
     """Run intentionally slow query for performance testing"""
-    connection = get_oracle_connection()
+    # Route to legacy instance for resource-intensive queries
+    instance_type = select_instance_for_workload('reporting')
+    connection = get_oracle_connection(instance_type)
     cursor = connection.cursor()
     
     try:
@@ -491,7 +579,7 @@ async def run_slow_query():
 async def health_check():
     """Health check endpoint"""
     try:
-        connection = get_oracle_connection()
+        connection = get_oracle_connection('primary')
         cursor = connection.cursor()
         cursor.execute("SELECT 1 FROM DUAL")
         cursor.close()

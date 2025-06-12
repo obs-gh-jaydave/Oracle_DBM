@@ -14,16 +14,94 @@ receivers:
           allowed_headers:
             - "*"
 
-  # Host metrics for testing Observe connectivity
+  # Comprehensive host metrics collection with Oracle correlation
   hostmetrics:
-    collection_interval: 30s
+    collection_interval: 15s
     scrapers:
       cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+          system.cpu.time:
+            enabled: true
       memory:
-  
-  sqlquery:
+        metrics:
+          system.memory.usage:
+            enabled: true
+          system.memory.utilization:
+            enabled: true
+      disk:
+        metrics:
+          system.disk.io:
+            enabled: true
+          system.disk.operations:
+            enabled: true
+          system.disk.io_time:
+            enabled: true
+          system.disk.merged:
+            enabled: true
+      filesystem:
+        metrics:
+          system.filesystem.usage:
+            enabled: true
+          system.filesystem.utilization:
+            enabled: true
+          system.filesystem.inodes.usage:
+            enabled: true
+      network:
+        metrics:
+          system.network.io:
+            enabled: true
+          system.network.connections:
+            enabled: true
+          system.network.packets:
+            enabled: true
+      load:
+      processes:
+        metrics:
+          system.processes.count:
+            enabled: true
+          system.processes.created:
+            enabled: true
+      paging:
+        metrics:
+          system.paging.usage:
+            enabled: true
+          system.paging.operations:
+            enabled: true
+
+  # Process-specific metrics for Oracle databases
+  hostmetrics/oracle_processes:
+    collection_interval: 30s
+    scrapers:
+      process:
+        mute_process_name_error: true
+        include:
+          names: ["oracle", "tnslsnr", "pmon", "smon", "dbwr", "lgwr", "ckpt", "arc"]
+          match_type: regexp
+        metrics:
+          process.cpu.utilization:
+            enabled: true
+          process.cpu.time:
+            enabled: true
+          process.memory.usage:
+            enabled: true
+          process.memory.virtual:
+            enabled: true
+          process.disk.io:
+            enabled: true
+      load:
+      processes:
+        metrics:
+          system.processes.count:
+            enabled: true
+          system.processes.created:
+            enabled: true
+
+  # Primary Oracle Database Instance
+  sqlquery/oracle_primary:
     driver: oracle
-    datasource: "oracle://otel_monitor:${ORACLE_PASSWORD}@oracle-db:1521/XEPDB1"
+    datasource: "oracle://${ORACLE_MONITOR_USER}:${ORACLE_MONITOR_PASSWORD}@oracle-db-primary:1521/xepdb1"
     collection_interval: 10s
     queries:
       # 1) Oracle ECID Session Correlation
@@ -43,19 +121,18 @@ receivers:
             s.status AS SESSION_STATUS,
             s.logon_time AS LOGON_TIME,
             s.last_call_et AS LAST_CALL_ELAPSED_TIME,
-            -- Extract structured correlation from CLIENT_INFO
+            -- Extract OpenTelemetry context from CLIENT_INFO (exclude RUM correlation)
             NVL(REGEXP_SUBSTR(s.client_info, 'otel_trace=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
             NVL(REGEXP_SUBSTR(s.client_info, 'otel_span=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
-            NVL(REGEXP_SUBSTR(s.client_info, 'correlation=([^,]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
             NVL(REGEXP_SUBSTR(s.client_info, 'user_action=([^,]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION,
             'oracle_session_correlation' AS LOG_TYPE
           FROM v$session s
           WHERE (s.client_info LIKE '%otel_trace=%' OR s.client_identifier LIKE 'obs-%')
-            AND s.username = 'TESTUSER'
+            AND s.username = '${ORACLE_MONITOR_TARGET_USER}'
             AND s.type = 'USER'
         logs:
           - body_column: CLIENT_INFO
-            attribute_columns: [SESSION_ID, SERIAL_NUMBER, USERNAME, PROGRAM, MACHINE, ECID, MODULE, ACTION, SESSION_STATUS, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
+            attribute_columns: [SESSION_ID, SERIAL_NUMBER, USERNAME, PROGRAM, MACHINE, ECID, MODULE, ACTION, SESSION_STATUS, OTEL_TRACE_ID, OTEL_SPAN_ID, USER_ACTION, LOG_TYPE]
 
       # 2a) Oracle Buffer Cache Hit Ratio
       - sql: |
@@ -132,7 +209,7 @@ receivers:
             'oracle_sql_execution' AS LOG_TYPE
           FROM v$sql s
           WHERE s.last_active_time > SYSDATE - INTERVAL '60' SECOND
-            AND s.parsing_schema_name = 'TESTUSER'
+            AND s.parsing_schema_name = '${ORACLE_MONITOR_TARGET_USER}'
             AND s.executions > 0
             AND ROWNUM <= 20
         metrics:
@@ -166,12 +243,11 @@ receivers:
       - sql: |
           SELECT 
             sql.sql_id AS SQL_ID,
-            'execution_plan_with_correlation' AS LOG_TYPE,
+            'oracle_correlation_plan' AS LOG_TYPE,
             sql.parsing_schema_name AS SCHEMA_NAME,
             sql.plan_hash_value AS PLAN_HASH_VALUE,
             sql.last_active_time AS LAST_ACTIVE_TIME,
-            -- Extract correlation and OpenTelemetry context from SQL text comments (most reliable method)
-            NVL(REGEXP_SUBSTR(sql.sql_text, 'correlation_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_correlation') AS CORRELATION_ID,
+            -- Extract OpenTelemetry context from SQL text comments (exclude RUM correlation_id)
             NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
             NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
             NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID,
@@ -184,7 +260,7 @@ receivers:
           FROM v$sql sql
           JOIN v$sql_plan p ON sql.sql_id = p.sql_id AND sql.plan_hash_value = p.plan_hash_value
           WHERE sql.last_active_time > SYSDATE - INTERVAL '120' SECOND
-            AND sql.parsing_schema_name = 'TESTUSER'
+            AND sql.parsing_schema_name = '${ORACLE_MONITOR_TARGET_USER}'
             AND sql.sql_text NOT LIKE '%v$sql%'
             AND sql.sql_text NOT LIKE '%V$SQL%'
             AND sql.sql_text NOT LIKE '%v$session%'
@@ -193,7 +269,7 @@ receivers:
           GROUP BY sql.sql_id, sql.parsing_schema_name, sql.plan_hash_value, sql.last_active_time, sql.sql_text
         logs:
           - body_column: EXECUTION_PLAN
-            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, PLAN_HASH_VALUE, LAST_ACTIVE_TIME, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION]
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, PLAN_HASH_VALUE, LAST_ACTIVE_TIME, OTEL_TRACE_ID, OTEL_SPAN_ID, USER_ACTION]
 
       # 5) Recent SQL with Correlation Extraction from Comments
       - sql: |
@@ -204,8 +280,7 @@ receivers:
             sql.executions AS EXECUTION_COUNT,
             TRUNC(sql.elapsed_time / 1000000) AS ELAPSED_TIME_SECONDS,
             NVL(SUBSTR(sql.sql_text, 1, 150), 'N/A') AS SQL_TEXT_PREVIEW,
-            -- Extract correlation and OpenTelemetry context from SQL comments
-            NVL(REGEXP_SUBSTR(sql.sql_text, 'correlation_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_correlation') AS CORRELATION_ID,
+            -- Extract OpenTelemetry context from SQL comments (exclude RUM correlation_id)
             NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
             NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
             NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID
@@ -219,7 +294,66 @@ receivers:
           ORDER BY sql.last_active_time DESC
         logs:
           - body_column: SQL_TEXT_PREVIEW
-            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, EXECUTION_COUNT, ELAPSED_TIME_SECONDS, CORRELATION_ID, USER_ACTION, OTEL_TRACE_ID, OTEL_SPAN_ID]
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, EXECUTION_COUNT, ELAPSED_TIME_SECONDS, USER_ACTION, OTEL_TRACE_ID, OTEL_SPAN_ID]
+
+      # 5a) Expensive SQL Queries - Critical for DBA Performance Tuning
+      - sql: |
+          SELECT 
+            sql.sql_id AS SQL_ID,
+            'oracle_expensive_sql' AS LOG_TYPE,
+            sql.parsing_schema_name AS SCHEMA_NAME,
+            ROUND(sql.elapsed_time / 1000000, 2) AS ELAPSED_TIME_SECONDS,
+            ROUND(sql.cpu_time / 1000000, 2) AS CPU_TIME_SECONDS,
+            sql.buffer_gets AS BUFFER_GETS,
+            sql.disk_reads AS DISK_READS,
+            sql.executions AS EXECUTION_COUNT,
+            ROUND(sql.rows_processed / GREATEST(sql.executions, 1), 2) AS AVG_ROWS_PER_EXEC,
+            SUBSTR(sql.sql_text, 1, 200) AS SQL_TEXT_PREVIEW,
+            CASE 
+              WHEN sql.elapsed_time / 1000000 > 30 THEN 'CRITICAL'
+              WHEN sql.elapsed_time / 1000000 > 10 THEN 'WARNING'
+              ELSE 'INFO'
+            END AS PERFORMANCE_IMPACT
+          FROM v$sql sql
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '60' SECOND
+            AND sql.elapsed_time / 1000000 > 5
+            AND sql.executions > 0
+            AND sql.parsing_schema_name IS NOT NULL
+          ORDER BY sql.elapsed_time DESC
+          FETCH FIRST 10 ROWS ONLY
+        logs:
+          - body_column: SQL_TEXT_PREVIEW
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, ELAPSED_TIME_SECONDS, CPU_TIME_SECONDS, BUFFER_GETS, DISK_READS, EXECUTION_COUNT, AVG_ROWS_PER_EXEC, PERFORMANCE_IMPACT]
+
+      # 5b) Blocking Sessions - Critical for DBA Troubleshooting
+      - sql: |
+          SELECT 
+            'oracle_blocking_sessions' AS LOG_TYPE,
+            blocker.sid AS BLOCKING_SID,
+            blocker.serial# AS BLOCKING_SERIAL,
+            blocker.username AS BLOCKING_USERNAME,
+            blocker.program AS BLOCKING_PROGRAM,
+            blocked.sid AS BLOCKED_SID,
+            blocked.serial# AS BLOCKED_SERIAL,
+            blocked.username AS BLOCKED_USERNAME,
+            blocked.program AS BLOCKED_PROGRAM,
+            blocked.wait_class AS WAIT_CLASS,
+            blocked.event AS WAIT_EVENT,
+            ROUND(blocked.seconds_in_wait, 2) AS SECONDS_WAITING,
+            CASE 
+              WHEN blocked.seconds_in_wait > 300 THEN 'CRITICAL'
+              WHEN blocked.seconds_in_wait > 60 THEN 'WARNING'
+              ELSE 'INFO'
+            END AS BLOCKING_SEVERITY,
+            'Session ' || blocker.sid || ' (' || blocker.username || ') blocking session ' || blocked.sid || ' for ' || ROUND(blocked.seconds_in_wait, 2) || ' seconds' AS BLOCKING_DESCRIPTION
+          FROM v$session blocker, v$session blocked
+          WHERE blocker.sid = blocked.blocking_session
+            AND blocked.blocking_session IS NOT NULL
+            AND blocked.seconds_in_wait > 30
+        logs:
+          - body_column: BLOCKING_DESCRIPTION
+            attribute_columns: [LOG_TYPE, BLOCKING_SID, BLOCKING_SERIAL, BLOCKING_USERNAME, BLOCKING_PROGRAM, BLOCKED_SID, BLOCKED_SERIAL, BLOCKED_USERNAME, BLOCKED_PROGRAM, WAIT_CLASS, WAIT_EVENT, SECONDS_WAITING, BLOCKING_SEVERITY]
+
 
       # 6a) Oracle Active Sessions
       - sql: |
@@ -411,6 +545,867 @@ receivers:
               oracle.monitoring.level: "instance"
               oracle.transaction.component: "redo_log"
 
+      # 10a) Oracle Deadlock Detection
+      - sql: |
+          SELECT 
+            value AS METRIC_VALUE
+          FROM v$sysstat 
+          WHERE name = 'enqueue deadlocks'
+        metrics:
+          - metric_name: oracle.locks.deadlocks_total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of deadlocks detected since database startup - indicates lock contention issues"
+            static_attributes:
+              oracle.metric.category: "locks"
+              oracle.metric.type: "deadlock_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.locks.severity: "critical"
+
+      # 10b) Oracle Lock Waits
+      - sql: |
+          SELECT 
+            value AS METRIC_VALUE
+          FROM v$sysstat 
+          WHERE name = 'enqueue waits'
+        metrics:
+          - metric_name: oracle.locks.waits_total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of lock waits since database startup - measures lock contention frequency"
+            static_attributes:
+              oracle.metric.category: "locks"
+              oracle.metric.type: "lock_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.locks.type: "enqueue_waits"
+
+      # 10c) Oracle Current Blocking Sessions
+      - sql: |
+          SELECT 
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session s1
+          WHERE s1.blocking_session IS NOT NULL
+            AND s1.type = 'USER'
+        metrics:
+          - metric_name: oracle.locks.blocked_sessions
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of user sessions currently blocked by other sessions - indicates active lock contention"
+            static_attributes:
+              oracle.metric.category: "locks"
+              oracle.metric.type: "blocking_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.locks.status: "active"
+
+      # 10d) Oracle Lock Wait Time
+      - sql: |
+          SELECT 
+            event AS LOCK_EVENT,
+            ROUND(time_waited_micro / 1000000, 4) AS METRIC_VALUE,
+            wait_class AS WAIT_CLASS
+          FROM v$system_event 
+          WHERE wait_class = 'Application'
+            AND event LIKE '%enq%'
+            AND total_waits > 0
+          ORDER BY time_waited_micro DESC
+          FETCH FIRST 5 ROWS ONLY
+        metrics:
+          - metric_name: oracle.locks.wait_time_seconds
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Time spent waiting for specific lock types in seconds - helps identify problematic lock patterns"
+            static_attributes:
+              oracle.metric.category: "locks"
+              oracle.metric.type: "wait_time_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.locks.impact: "performance"
+            attribute_columns: [LOCK_EVENT, WAIT_CLASS]
+
+      # 10e) Oracle Concurrent Connected Users (Active + Inactive)
+      - sql: |
+          SELECT 
+            s.status AS SESSION_STATUS,
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session s
+          WHERE s.type = 'USER'
+            AND s.username IS NOT NULL
+          GROUP BY s.status
+        metrics:
+          - metric_name: oracle.sessions.by_status
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of user sessions grouped by status (ACTIVE, INACTIVE, etc.) - detailed concurrent user breakdown"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "detailed_connection_metrics"
+              oracle.monitoring.level: "instance"
+            attribute_columns: [SESSION_STATUS]
+
+      # 11a) Top Wait Events - Critical for DBA Alerting
+      - sql: |
+          SELECT 
+            event AS WAIT_EVENT_NAME,
+            wait_class AS WAIT_CLASS,
+            ROUND(average_wait_time_ms, 2) AS METRIC_VALUE,
+            total_waits AS TOTAL_WAITS,
+            ROUND(time_waited_ms / 1000, 2) AS TOTAL_TIME_WAITED_SECONDS
+          FROM (
+            SELECT 
+              event,
+              wait_class,
+              total_waits,
+              time_waited_micro / 1000 AS time_waited_ms,
+              CASE WHEN total_waits > 0 THEN time_waited_micro / total_waits / 1000 ELSE 0 END AS average_wait_time_ms,
+              ROW_NUMBER() OVER (ORDER BY time_waited_micro DESC) AS rn
+            FROM v$system_event 
+            WHERE wait_class != 'Idle' 
+              AND total_waits > 0
+              AND time_waited_micro > 1000000
+          ) 
+          WHERE rn <= 10
+        metrics:
+          - metric_name: oracle.wait_events.average_time_ms
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Average wait time in milliseconds for top Oracle wait events - critical for performance monitoring"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "wait_events"
+              oracle.monitoring.level: "instance"
+              oracle.alerting.priority: "high"
+            attribute_columns: [WAIT_EVENT_NAME, WAIT_CLASS, TOTAL_WAITS, TOTAL_TIME_WAITED_SECONDS]
+
+      # 11b) Tablespace Usage - Critical for Space Management
+      - sql: |
+          SELECT 
+            ts.tablespace_name AS TABLESPACE_NAME,
+            ROUND((ts.total_size_mb - NVL(fs.free_size_mb, 0)) / ts.total_size_mb * 100, 2) AS METRIC_VALUE,
+            ROUND(ts.total_size_mb, 2) AS TOTAL_SIZE_MB,
+            ROUND(NVL(fs.free_size_mb, 0), 2) AS FREE_SIZE_MB,
+            CASE 
+              WHEN (ts.total_size_mb - NVL(fs.free_size_mb, 0)) / ts.total_size_mb * 100 > 90 THEN 'CRITICAL'
+              WHEN (ts.total_size_mb - NVL(fs.free_size_mb, 0)) / ts.total_size_mb * 100 > 80 THEN 'WARNING'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS total_size_mb
+            FROM dba_data_files 
+            GROUP BY tablespace_name
+          ) ts
+          LEFT JOIN (
+            SELECT 
+              tablespace_name,
+              SUM(bytes) / 1024 / 1024 AS free_size_mb
+            FROM dba_free_space 
+            GROUP BY tablespace_name
+          ) fs ON ts.tablespace_name = fs.tablespace_name
+        metrics:
+          - metric_name: oracle.tablespace.usage_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Tablespace usage percentage - critical for space monitoring and alerting"
+            static_attributes:
+              oracle.metric.category: "storage"
+              oracle.metric.type: "space_usage"
+              oracle.monitoring.level: "tablespace"
+              oracle.alerting.priority: "critical"
+            attribute_columns: [TABLESPACE_NAME, TOTAL_SIZE_MB, FREE_SIZE_MB, ALERT_LEVEL]
+
+      # 11c) Long Running Transactions - DBA Troubleshooting
+      - sql: |
+          SELECT 
+            s.sid AS SESSION_ID,
+            s.serial# AS SERIAL_NUMBER,
+            s.username AS USERNAME,
+            s.program AS PROGRAM,
+            ROUND((SYSDATE - t.start_date) * 24 * 60, 2) AS METRIC_VALUE,
+            TO_CHAR(t.start_date, 'YYYY-MM-DD HH24:MI:SS') AS TRANSACTION_START_TIME,
+            CASE 
+              WHEN (SYSDATE - t.start_date) * 24 * 60 > 60 THEN 'CRITICAL'
+              WHEN (SYSDATE - t.start_date) * 24 * 60 > 30 THEN 'WARNING'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM v$transaction t
+          JOIN v$session s ON t.ses_addr = s.saddr
+          WHERE s.username IS NOT NULL
+            AND (SYSDATE - t.start_date) * 24 * 60 > 5
+          ORDER BY t.start_date
+        metrics:
+          - metric_name: oracle.transactions.duration_minutes
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Duration of long-running transactions in minutes - critical for identifying blocking transactions"
+            static_attributes:
+              oracle.metric.category: "transactions"
+              oracle.metric.type: "long_running"
+              oracle.monitoring.level: "session"
+              oracle.alerting.priority: "high"
+            attribute_columns: [SESSION_ID, SERIAL_NUMBER, USERNAME, PROGRAM, TRANSACTION_START_TIME, ALERT_LEVEL]
+
+      # 11d) Database Connection Pool Health
+      - sql: |
+          SELECT 
+            'connection_limit_percent' AS METRIC_NAME,
+            ROUND((current_connections.cnt / session_limit.value) * 100, 2) AS METRIC_VALUE,
+            current_connections.cnt AS CURRENT_CONNECTIONS,
+            session_limit.value AS SESSION_LIMIT,
+            CASE 
+              WHEN (current_connections.cnt / session_limit.value) * 100 > 90 THEN 'CRITICAL'
+              WHEN (current_connections.cnt / session_limit.value) * 100 > 80 THEN 'WARNING'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM (
+            SELECT COUNT(*) AS cnt FROM v$session WHERE type = 'USER'
+          ) current_connections,
+          (
+            SELECT value FROM v$parameter WHERE name = 'sessions'
+          ) session_limit
+        metrics:
+          - metric_name: oracle.connections.limit_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Percentage of session limit being used - critical for connection pool monitoring"
+            static_attributes:
+              oracle.metric.category: "connections"
+              oracle.metric.type: "pool_health"
+              oracle.monitoring.level: "instance"
+              oracle.alerting.priority: "critical"
+            attribute_columns: [METRIC_NAME, CURRENT_CONNECTIONS, SESSION_LIMIT, ALERT_LEVEL]
+
+      # 11e) Redo Log Switch Frequency - Performance Indicator
+      - sql: |
+          SELECT 
+            'redo_switches_per_hour' AS METRIC_NAME,
+            COUNT(*) AS METRIC_VALUE,
+            CASE 
+              WHEN COUNT(*) > 100 THEN 'WARNING'
+              WHEN COUNT(*) > 200 THEN 'CRITICAL'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM v$log_history 
+          WHERE first_time > SYSDATE - 1/24
+        metrics:
+          - metric_name: oracle.redo.switches_per_hour
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of redo log switches in the last hour - indicates I/O load and sizing issues"
+            static_attributes:
+              oracle.metric.category: "redo"
+              oracle.metric.type: "switch_frequency"
+              oracle.monitoring.level: "instance"
+              oracle.alerting.priority: "medium"
+            attribute_columns: [METRIC_NAME, ALERT_LEVEL]
+
+      # 12) Per-Database CPU Usage (Primary Instance)
+      - sql: |
+          SELECT 
+            'cpu_usage_percent' AS METRIC_NAME,
+            ROUND(AVG(value), 2) AS METRIC_VALUE,
+            MAX(value) AS PEAK_CPU_PERCENT,
+            COUNT(*) AS SAMPLE_COUNT,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN AVG(value) > 90 THEN 'CRITICAL'
+              WHEN AVG(value) > 80 THEN 'WARNING'
+              WHEN AVG(value) > 70 THEN 'CAUTION'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM v$sysmetric 
+          WHERE metric_name = 'CPU Usage Per Sec'
+            AND group_id = 2
+            AND intsize_csec > 0
+        metrics:
+          - metric_name: oracle.database.cpu_usage_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Database-level CPU usage percentage - critical for per-database resource monitoring"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "database_cpu"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_database"
+              oracle.alerting.priority: "high"
+            attribute_columns: [METRIC_NAME, DATABASE_NAME, PEAK_CPU_PERCENT, SAMPLE_COUNT, ALERT_LEVEL]
+
+      # 13) Per-Database Memory Usage (Primary Instance)
+      - sql: |
+          SELECT 
+            'memory_usage_percent' AS METRIC_NAME,
+            ROUND((used_memory.bytes / total_memory.bytes) * 100, 2) AS METRIC_VALUE,
+            ROUND(used_memory.bytes / 1024 / 1024, 2) AS USED_MEMORY_MB,
+            ROUND(total_memory.bytes / 1024 / 1024, 2) AS TOTAL_MEMORY_MB,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 95 THEN 'CRITICAL'
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 90 THEN 'WARNING'
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 85 THEN 'CAUTION'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM (
+            SELECT SUM(bytes) AS bytes 
+            FROM v$sgastat 
+            WHERE name IN ('buffer_cache', 'shared_pool', 'large_pool', 'java_pool', 'streams_pool')
+          ) used_memory,
+          (
+            SELECT SUM(value) AS bytes FROM v$sga
+          ) total_memory
+        metrics:
+          - metric_name: oracle.database.memory_usage_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Database-level memory usage percentage - essential for per-database resource monitoring"
+            static_attributes:
+              oracle.metric.category: "memory"
+              oracle.metric.type: "database_memory"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_database"
+              oracle.alerting.priority: "high"
+            attribute_columns: [METRIC_NAME, DATABASE_NAME, USED_MEMORY_MB, TOTAL_MEMORY_MB, ALERT_LEVEL]
+
+      # 14) Database Connection Pool by Application (Primary Instance)
+      - sql: |
+          SELECT 
+            NVL(program, 'unknown') AS APPLICATION_NAME,
+            COUNT(*) AS CONNECTION_COUNT,
+            COUNT(CASE WHEN status = 'ACTIVE' THEN 1 END) AS ACTIVE_CONNECTIONS,
+            COUNT(CASE WHEN status = 'INACTIVE' THEN 1 END) AS INACTIVE_CONNECTIONS,
+            'XEPDB1' AS DATABASE_NAME,
+            ROUND(AVG(last_call_et), 2) AS AVG_IDLE_TIME_SECONDS
+          FROM v$session 
+          WHERE type = 'USER'
+            AND username IS NOT NULL
+          GROUP BY program
+          HAVING COUNT(*) > 0
+        metrics:
+          - metric_name: oracle.database.connections_by_application
+            value_column: CONNECTION_COUNT
+            data_type: gauge
+            value_type: int
+            description: "Per-database connection count by application - critical for multi-tenant monitoring"
+            static_attributes:
+              oracle.metric.category: "connections"
+              oracle.metric.type: "application_breakdown"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_application"
+            attribute_columns: [APPLICATION_NAME, DATABASE_NAME, ACTIVE_CONNECTIONS, INACTIVE_CONNECTIONS, AVG_IDLE_TIME_SECONDS]
+
+      # 15) Database Disk I/O Metrics (Primary Instance)
+      - sql: |
+          SELECT 
+            'disk_reads_per_sec' AS METRIC_NAME,
+            ROUND(AVG(value), 2) AS METRIC_VALUE,
+            MAX(value) AS PEAK_READS_PER_SEC,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN AVG(value) > 1000 THEN 'WARNING'
+              WHEN AVG(value) > 2000 THEN 'CRITICAL'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM v$sysmetric 
+          WHERE metric_name = 'Physical Reads Per Sec'
+            AND group_id = 2
+          UNION ALL
+          SELECT 
+            'disk_writes_per_sec' AS METRIC_NAME,
+            ROUND(AVG(value), 2) AS METRIC_VALUE,
+            MAX(value) AS PEAK_WRITES_PER_SEC,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN AVG(value) > 500 THEN 'WARNING'
+              WHEN AVG(value) > 1000 THEN 'CRITICAL'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM v$sysmetric 
+          WHERE metric_name = 'Physical Writes Per Sec'
+            AND group_id = 2
+        metrics:
+          - metric_name: oracle.database.disk_io_per_sec
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Database-level disk I/O operations per second - essential for storage performance monitoring"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "disk_io"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_database"
+            attribute_columns: [METRIC_NAME, DATABASE_NAME, ALERT_LEVEL]
+
+  # Secondary Oracle Database Instance
+  sqlquery/oracle_secondary:
+    driver: oracle
+    datasource: "oracle://${ORACLE_MONITOR_USER}:${ORACLE_MONITOR_PASSWORD}@oracle-db-secondary:1521/xepdb1"
+    collection_interval: 10s
+    queries:
+      # 1) Oracle ECID Session Correlation - Secondary Instance
+      - sql: |
+          SELECT 
+            s.sid AS SESSION_ID,
+            s.serial# AS SERIAL_NUMBER,
+            s.username AS USERNAME,
+            s.program AS PROGRAM,
+            s.machine AS MACHINE,
+            s.osuser AS OS_USER,
+            -- Oracle ECID correlation (most reliable method)
+            NVL(s.client_identifier, 'none') AS ECID,
+            NVL(s.client_info, 'none') AS CLIENT_INFO,
+            NVL(s.module, 'unknown') AS MODULE,
+            NVL(s.action, 'unknown') AS ACTION,
+            s.status AS SESSION_STATUS,
+            s.logon_time AS LOGON_TIME,
+            s.last_call_et AS LAST_CALL_ELAPSED_TIME,
+            -- Extract structured correlation from CLIENT_INFO
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_trace=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'otel_span=([^,]+)', 1, 1, NULL, 1), 'none') AS OTEL_SPAN_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'correlation=([^,]+)', 1, 1, NULL, 1), 'none') AS CORRELATION_ID,
+            NVL(REGEXP_SUBSTR(s.client_info, 'user_action=([^,]+)', 1, 1, NULL, 1), 'none') AS USER_ACTION,
+            'oracle_session_correlation' AS LOG_TYPE
+          FROM v$session s
+          WHERE (s.client_info LIKE '%otel_trace=%' OR s.client_identifier LIKE 'obs-%')
+            AND s.username = 'TESTUSER'
+            AND s.type = 'USER'
+        logs:
+          - body_column: CLIENT_INFO
+            attribute_columns: [SESSION_ID, SERIAL_NUMBER, USERNAME, PROGRAM, MACHINE, ECID, MODULE, ACTION, SESSION_STATUS, OTEL_TRACE_ID, OTEL_SPAN_ID, CORRELATION_ID, USER_ACTION, LOG_TYPE]
+
+      # Oracle Active Sessions - Secondary Instance
+      - sql: |
+          SELECT 
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session 
+          WHERE status = 'ACTIVE' AND type = 'USER'
+        metrics:
+          - metric_name: oracle.sessions.active
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of active Oracle user sessions currently connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+
+      # Oracle Total Sessions - Secondary Instance
+      - sql: |
+          SELECT 
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session 
+          WHERE type = 'USER'
+        metrics:
+          - metric_name: oracle.sessions.total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of Oracle user sessions (active and inactive) connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+
+      # Oracle Buffer Cache Hit Ratio - Secondary Instance
+      - sql: |
+          SELECT 
+            ROUND((1 - (phy.value / GREATEST(db.value + cons.value, 1))) * 100, 2) AS METRIC_VALUE
+          FROM v$sysstat phy, v$sysstat db, v$sysstat cons
+          WHERE phy.name = 'physical reads'
+            AND db.name = 'db block gets'  
+            AND cons.name = 'consistent gets'
+        metrics:
+          - metric_name: oracle.performance.buffer_cache_hit_ratio
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Oracle buffer cache hit ratio percentage - measures efficiency of data block caching in memory"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "cache_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.performance.component: "buffer_cache"
+
+      # Oracle SGA Memory Size - Secondary Instance
+      - sql: |
+          SELECT 
+            ROUND(SUM(value) / 1024 / 1024, 2) AS METRIC_VALUE
+          FROM v$sga
+        metrics:
+          - metric_name: oracle.memory.sga_size
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Size of Oracle System Global Area (SGA) in megabytes - shared memory region for database caching and processing"
+            static_attributes:
+              oracle.metric.category: "memory"
+              oracle.metric.type: "memory_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.memory.component: "sga"
+
+      # Secondary Instance - Deadlock Detection
+      - sql: |
+          SELECT 
+            value AS METRIC_VALUE
+          FROM v$sysstat 
+          WHERE name = 'enqueue deadlocks'
+        metrics:
+          - metric_name: oracle.locks.deadlocks_total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of deadlocks detected since database startup - indicates lock contention issues"
+            static_attributes:
+              oracle.metric.category: "locks"
+              oracle.metric.type: "deadlock_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.locks.severity: "critical"
+
+      # Secondary Instance - Lock Waits
+      - sql: |
+          SELECT 
+            value AS METRIC_VALUE
+          FROM v$sysstat 
+          WHERE name = 'enqueue waits'
+        metrics:
+          - metric_name: oracle.locks.waits_total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of lock waits since database startup - measures lock contention frequency"
+            static_attributes:
+              oracle.metric.category: "locks"
+              oracle.metric.type: "lock_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.locks.type: "enqueue_waits"
+
+      # Secondary Instance - Current Blocking Sessions
+      - sql: |
+          SELECT 
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session s1
+          WHERE s1.blocking_session IS NOT NULL
+            AND s1.type = 'USER'
+        metrics:
+          - metric_name: oracle.locks.blocked_sessions
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of user sessions currently blocked by other sessions - indicates active lock contention"
+            static_attributes:
+              oracle.metric.category: "locks"
+              oracle.metric.type: "blocking_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.locks.status: "active"
+
+      # Secondary Instance - Concurrent Connected Users by Status
+      - sql: |
+          SELECT 
+            s.status AS SESSION_STATUS,
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session s
+          WHERE s.type = 'USER'
+            AND s.username IS NOT NULL
+          GROUP BY s.status
+        metrics:
+          - metric_name: oracle.sessions.by_status
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of user sessions grouped by status (ACTIVE, INACTIVE, etc.) - detailed concurrent user breakdown"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "detailed_connection_metrics"
+              oracle.monitoring.level: "instance"
+            attribute_columns: [SESSION_STATUS]
+
+      # Per-Database CPU Usage (Secondary Instance)
+      - sql: |
+          SELECT 
+            'cpu_usage_percent' AS METRIC_NAME,
+            ROUND(AVG(value), 2) AS METRIC_VALUE,
+            MAX(value) AS PEAK_CPU_PERCENT,
+            COUNT(*) AS SAMPLE_COUNT,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN AVG(value) > 90 THEN 'CRITICAL'
+              WHEN AVG(value) > 80 THEN 'WARNING'
+              WHEN AVG(value) > 70 THEN 'CAUTION'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM v$sysmetric 
+          WHERE metric_name = 'CPU Usage Per Sec'
+            AND group_id = 2
+            AND intsize_csec > 0
+        metrics:
+          - metric_name: oracle.database.cpu_usage_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Database-level CPU usage percentage - Secondary instance analytics workload"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "database_cpu"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_database"
+              oracle.alerting.priority: "high"
+            attribute_columns: [METRIC_NAME, DATABASE_NAME, PEAK_CPU_PERCENT, SAMPLE_COUNT, ALERT_LEVEL]
+
+      # Per-Database Memory Usage (Secondary Instance)
+      - sql: |
+          SELECT 
+            'memory_usage_percent' AS METRIC_NAME,
+            ROUND((used_memory.bytes / total_memory.bytes) * 100, 2) AS METRIC_VALUE,
+            ROUND(used_memory.bytes / 1024 / 1024, 2) AS USED_MEMORY_MB,
+            ROUND(total_memory.bytes / 1024 / 1024, 2) AS TOTAL_MEMORY_MB,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 95 THEN 'CRITICAL'
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 90 THEN 'WARNING'
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 85 THEN 'CAUTION'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM (
+            SELECT SUM(bytes) AS bytes 
+            FROM v$sgastat 
+            WHERE name IN ('buffer_cache', 'shared_pool', 'large_pool', 'java_pool', 'streams_pool')
+          ) used_memory,
+          (
+            SELECT SUM(value) AS bytes FROM v$sga
+          ) total_memory
+        metrics:
+          - metric_name: oracle.database.memory_usage_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Database-level memory usage percentage - Secondary instance analytics workload"
+            static_attributes:
+              oracle.metric.category: "memory"
+              oracle.metric.type: "database_memory"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_database"
+              oracle.alerting.priority: "high"
+            attribute_columns: [METRIC_NAME, DATABASE_NAME, USED_MEMORY_MB, TOTAL_MEMORY_MB, ALERT_LEVEL]
+
+      # 4) Execution Plans with Correlation from SQL Comments (Most Reliable) - Secondary Instance
+      - sql: |
+          SELECT 
+            sql.sql_id AS SQL_ID,
+            'oracle_correlation_plan' AS LOG_TYPE,
+            sql.parsing_schema_name AS SCHEMA_NAME,
+            sql.plan_hash_value AS PLAN_HASH_VALUE,
+            sql.last_active_time AS LAST_ACTIVE_TIME,
+            -- Extract OpenTelemetry context from SQL text comments (exclude RUM correlation_id)
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID,
+            LISTAGG(
+              LPAD(' ', p.depth * 2) || p.operation || 
+              CASE WHEN p.options IS NOT NULL THEN ' (' || p.options || ')' END ||
+              CASE WHEN p.object_name IS NOT NULL THEN ' ON ' || p.object_name END,
+              CHR(10)
+            ) WITHIN GROUP (ORDER BY p.id) AS EXECUTION_PLAN
+          FROM v$sql sql
+          JOIN v$sql_plan p ON sql.sql_id = p.sql_id AND sql.plan_hash_value = p.plan_hash_value
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '120' SECOND
+            AND sql.parsing_schema_name = 'TESTUSER'
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.sql_text NOT LIKE '%V$SQL%'
+            AND sql.sql_text NOT LIKE '%v$session%'
+            AND sql.sql_text NOT LIKE '%V$SESSION%'
+            AND sql.executions > 0
+          GROUP BY sql.sql_id, sql.parsing_schema_name, sql.plan_hash_value, sql.last_active_time, sql.sql_text
+        logs:
+          - body_column: EXECUTION_PLAN
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, PLAN_HASH_VALUE, LAST_ACTIVE_TIME, OTEL_TRACE_ID, OTEL_SPAN_ID, USER_ACTION]
+
+  # Legacy Oracle Database Instance
+  sqlquery/oracle_legacy:
+    driver: oracle
+    datasource: "oracle://${ORACLE_MONITOR_USER}:${ORACLE_MONITOR_PASSWORD}@oracle-db-legacy:1521/xepdb1"
+    collection_interval: 10s
+    queries:
+      # Oracle Active Sessions - Legacy Instance
+      - sql: |
+          SELECT 
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session 
+          WHERE status = 'ACTIVE' AND type = 'USER'
+        metrics:
+          - metric_name: oracle.sessions.active
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Number of active Oracle user sessions currently connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+
+      # Oracle Total Sessions - Legacy Instance
+      - sql: |
+          SELECT 
+            COUNT(*) AS METRIC_VALUE
+          FROM v$session 
+          WHERE type = 'USER'
+        metrics:
+          - metric_name: oracle.sessions.total
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: int
+            description: "Total number of Oracle user sessions (active and inactive) connected to the database"
+            static_attributes:
+              oracle.metric.category: "sessions"
+              oracle.metric.type: "connection_metrics"
+              oracle.monitoring.level: "instance"
+
+      # Oracle Buffer Cache Hit Ratio - Legacy Instance
+      - sql: |
+          SELECT 
+            ROUND((1 - (phy.value / GREATEST(db.value + cons.value, 1))) * 100, 2) AS METRIC_VALUE
+          FROM v$sysstat phy, v$sysstat db, v$sysstat cons
+          WHERE phy.name = 'physical reads'
+            AND db.name = 'db block gets'  
+            AND cons.name = 'consistent gets'
+        metrics:
+          - metric_name: oracle.performance.buffer_cache_hit_ratio
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Oracle buffer cache hit ratio percentage - measures efficiency of data block caching in memory"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "cache_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.performance.component: "buffer_cache"
+
+      # Oracle SGA Memory Size - Legacy Instance
+      - sql: |
+          SELECT 
+            ROUND(SUM(value) / 1024 / 1024, 2) AS METRIC_VALUE
+          FROM v$sga
+        metrics:
+          - metric_name: oracle.memory.sga_size
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Size of Oracle System Global Area (SGA) in megabytes - shared memory region for database caching and processing"
+            static_attributes:
+              oracle.metric.category: "memory"
+              oracle.metric.type: "memory_metrics"
+              oracle.monitoring.level: "instance"
+              oracle.memory.component: "sga"
+
+      # Per-Database CPU Usage (Legacy Instance) 
+      - sql: |
+          SELECT 
+            'cpu_usage_percent' AS METRIC_NAME,
+            ROUND(AVG(value), 2) AS METRIC_VALUE,
+            MAX(value) AS PEAK_CPU_PERCENT,
+            COUNT(*) AS SAMPLE_COUNT,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN AVG(value) > 90 THEN 'CRITICAL'
+              WHEN AVG(value) > 80 THEN 'WARNING'
+              WHEN AVG(value) > 70 THEN 'CAUTION'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM v$sysmetric 
+          WHERE metric_name = 'CPU Usage Per Sec'
+            AND group_id = 2
+            AND intsize_csec > 0
+        metrics:
+          - metric_name: oracle.database.cpu_usage_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Database-level CPU usage percentage - Legacy instance batch/reporting workload"
+            static_attributes:
+              oracle.metric.category: "performance"
+              oracle.metric.type: "database_cpu"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_database"
+              oracle.alerting.priority: "medium"
+            attribute_columns: [METRIC_NAME, DATABASE_NAME, PEAK_CPU_PERCENT, SAMPLE_COUNT, ALERT_LEVEL]
+
+      # Per-Database Memory Usage (Legacy Instance)
+      - sql: |
+          SELECT 
+            'memory_usage_percent' AS METRIC_NAME,
+            ROUND((used_memory.bytes / total_memory.bytes) * 100, 2) AS METRIC_VALUE,
+            ROUND(used_memory.bytes / 1024 / 1024, 2) AS USED_MEMORY_MB,
+            ROUND(total_memory.bytes / 1024 / 1024, 2) AS TOTAL_MEMORY_MB,
+            'XEPDB1' AS DATABASE_NAME,
+            CASE 
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 95 THEN 'CRITICAL'
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 90 THEN 'WARNING'
+              WHEN (used_memory.bytes / total_memory.bytes) * 100 > 85 THEN 'CAUTION'
+              ELSE 'OK'
+            END AS ALERT_LEVEL
+          FROM (
+            SELECT SUM(bytes) AS bytes 
+            FROM v$sgastat 
+            WHERE name IN ('buffer_cache', 'shared_pool', 'large_pool', 'java_pool', 'streams_pool')
+          ) used_memory,
+          (
+            SELECT SUM(value) AS bytes FROM v$sga
+          ) total_memory
+        metrics:
+          - metric_name: oracle.database.memory_usage_percent
+            value_column: METRIC_VALUE
+            data_type: gauge
+            value_type: double
+            description: "Database-level memory usage percentage - Legacy instance batch/reporting workload"
+            static_attributes:
+              oracle.metric.category: "memory"
+              oracle.metric.type: "database_memory"
+              oracle.monitoring.level: "database"
+              oracle.resource.scope: "per_database"
+              oracle.alerting.priority: "medium"
+            attribute_columns: [METRIC_NAME, DATABASE_NAME, USED_MEMORY_MB, TOTAL_MEMORY_MB, ALERT_LEVEL]
+
+      # 4) Execution Plans with Correlation from SQL Comments (Most Reliable) - Legacy Instance
+      - sql: |
+          SELECT 
+            sql.sql_id AS SQL_ID,
+            'oracle_correlation_plan' AS LOG_TYPE,
+            sql.parsing_schema_name AS SCHEMA_NAME,
+            sql.plan_hash_value AS PLAN_HASH_VALUE,
+            sql.last_active_time AS LAST_ACTIVE_TIME,
+            -- Extract OpenTelemetry context from SQL text comments (exclude RUM correlation_id)
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'user_action=([^ \*/]+)', 1, 1, NULL, 1), 'unknown') AS USER_ACTION,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_trace_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_trace') AS OTEL_TRACE_ID,
+            NVL(REGEXP_SUBSTR(sql.sql_text, 'otel_span_id=([^ \*/]+)', 1, 1, NULL, 1), 'no_span') AS OTEL_SPAN_ID,
+            LISTAGG(
+              LPAD(' ', p.depth * 2) || p.operation || 
+              CASE WHEN p.options IS NOT NULL THEN ' (' || p.options || ')' END ||
+              CASE WHEN p.object_name IS NOT NULL THEN ' ON ' || p.object_name END,
+              CHR(10)
+            ) WITHIN GROUP (ORDER BY p.id) AS EXECUTION_PLAN
+          FROM v$sql sql
+          JOIN v$sql_plan p ON sql.sql_id = p.sql_id AND sql.plan_hash_value = p.plan_hash_value
+          WHERE sql.last_active_time > SYSDATE - INTERVAL '120' SECOND
+            AND sql.parsing_schema_name = 'TESTUSER'
+            AND sql.sql_text NOT LIKE '%v$sql%'
+            AND sql.sql_text NOT LIKE '%V$SQL%'
+            AND sql.sql_text NOT LIKE '%v$session%'
+            AND sql.sql_text NOT LIKE '%V$SESSION%'
+            AND sql.executions > 0
+          GROUP BY sql.sql_id, sql.parsing_schema_name, sql.plan_hash_value, sql.last_active_time, sql.sql_text
+        logs:
+          - body_column: EXECUTION_PLAN
+            attribute_columns: [SQL_ID, LOG_TYPE, SCHEMA_NAME, PLAN_HASH_VALUE, LAST_ACTIVE_TIME, OTEL_TRACE_ID, OTEL_SPAN_ID, USER_ACTION]
+
 processors:
   batch:
     timeout: 10s
@@ -424,8 +1419,167 @@ processors:
     system:
       hostname_sources: [dns, os]
   
-  # Apply Oracle-specific and environment attributes
-  resource:
+  # Apply common environment attributes
+  resource/common:
+    attributes:
+      # Environment & Deployment Configuration
+      - key: environment
+        value: "${ENVIRONMENT}"
+        action: upsert
+      - key: datacenter
+        value: "${DATACENTER}"
+        action: upsert
+      - key: region
+        value: "${REGION}"
+        action: upsert
+      - key: deployment.environment
+        value: "${DEPLOYMENT_ENVIRONMENT}"
+        action: upsert
+      - key: deployment.id
+        value: "${DEPLOYMENT_ID}"
+        action: upsert
+      - key: deployment.timestamp
+        value: "${DEPLOYMENT_TIMESTAMP}"
+        action: upsert
+      # Additional metadata for production environments
+      - key: oracle.monitoring.collector
+        value: "otel-contrib"
+        action: upsert
+      - key: oracle.monitoring.version
+        value: "0.128.0"
+        action: upsert
+      # Business unit and organizational tagging
+      - key: business.unit
+        value: "${BUSINESS_UNIT}"
+        action: upsert
+      - key: cost.center
+        value: "${COST_CENTER}"
+        action: upsert
+      - key: team.owner
+        value: "${TEAM_OWNER}"
+        action: upsert
+      - key: application.portfolio
+        value: "${APPLICATION_PORTFOLIO}"
+        action: upsert
+
+  # Primary Oracle Instance Resource Attributes
+  resource/oracle_primary:
+    attributes:
+      # Oracle Instance Identification - Primary
+      - key: oracle.instance.name
+        value: "${ORACLE_INSTANCE_NAME_PRIMARY}"
+        action: upsert
+      - key: oracle.database.name
+        value: "${ORACLE_DATABASE_NAME_PRIMARY}"
+        action: upsert
+      - key: oracle.host
+        value: "${ORACLE_HOST_PRIMARY}"
+        action: upsert
+      - key: oracle.port
+        value: "${ORACLE_PORT_PRIMARY}"
+        action: upsert
+      - key: oracle.version
+        value: "${ORACLE_VERSION_PRIMARY}"
+        action: upsert
+      - key: oracle.edition
+        value: "${ORACLE_EDITION_PRIMARY}"
+        action: upsert
+      - key: service.name
+        value: "${SERVICE_NAME_PRIMARY}"
+        action: upsert
+      - key: service.version
+        value: "${SERVICE_VERSION_PRIMARY}"
+        action: upsert
+      - key: oracle.instance.role
+        value: "primary"
+        action: upsert
+      - key: oracle.instance.tier
+        value: "production"
+        action: upsert
+      # Database-level granular attributes
+      - key: oracle.database.pdb_name
+        value: "XEPDB1"
+        action: upsert
+      - key: oracle.database.type
+        value: "OLTP"
+        action: upsert
+      - key: oracle.database.criticality
+        value: "high"
+        action: upsert
+      # Business context for primary instance
+      - key: business.unit.primary
+        value: "finance"
+        action: upsert
+      - key: cost.center.primary
+        value: "CC-FINANCE-001"
+        action: upsert
+      - key: team.owner.primary
+        value: "dba-team-primary"
+        action: upsert
+      - key: application.name
+        value: "core-banking"
+        action: upsert
+
+  # Secondary Oracle Instance Resource Attributes  
+  resource/oracle_secondary:
+    attributes:
+      # Oracle Instance Identification - Secondary
+      - key: oracle.instance.name
+        value: "${ORACLE_INSTANCE_NAME_SECONDARY}"
+        action: upsert
+      - key: oracle.database.name
+        value: "${ORACLE_DATABASE_NAME_SECONDARY}"
+        action: upsert
+      - key: oracle.host
+        value: "${ORACLE_HOST_SECONDARY}"
+        action: upsert
+      - key: oracle.port
+        value: "${ORACLE_PORT_SECONDARY}"
+        action: upsert
+      - key: oracle.version
+        value: "${ORACLE_VERSION_SECONDARY}"
+        action: upsert
+      - key: oracle.edition
+        value: "${ORACLE_EDITION_SECONDARY}"
+        action: upsert
+      - key: service.name
+        value: "${SERVICE_NAME_SECONDARY}"
+        action: upsert
+      - key: service.version
+        value: "${SERVICE_VERSION_SECONDARY}"
+        action: upsert
+      - key: oracle.instance.role
+        value: "secondary"
+        action: upsert
+      - key: oracle.instance.tier
+        value: "analytics"
+        action: upsert
+      # Database-level granular attributes
+      - key: oracle.database.pdb_name
+        value: "XEPDB1"
+        action: upsert
+      - key: oracle.database.type
+        value: "DSS"
+        action: upsert
+      - key: oracle.database.criticality
+        value: "medium"
+        action: upsert
+      # Business context for secondary instance
+      - key: business.unit.secondary
+        value: "analytics"
+        action: upsert
+      - key: cost.center.secondary
+        value: "CC-ANALYTICS-002"
+        action: upsert
+      - key: team.owner.secondary
+        value: "analytics-team"
+        action: upsert
+      - key: application.name
+        value: "business-intelligence"
+        action: upsert
+
+  # Legacy Oracle Instance Resource Attributes
+  resource/oracle_legacy:
     attributes:
       # Oracle Instance Identification
       - key: oracle.instance.name
@@ -482,6 +1636,36 @@ processors:
       - key: oracle.monitoring.version
         value: "0.128.0"
         action: upsert
+      # Legacy instance specific attributes
+      - key: oracle.instance.role
+        value: "legacy"
+        action: upsert
+      - key: oracle.instance.tier
+        value: "reporting"
+        action: upsert
+      # Database-level granular attributes
+      - key: oracle.database.pdb_name
+        value: "XEPDB1"
+        action: upsert
+      - key: oracle.database.type
+        value: "BATCH"
+        action: upsert
+      - key: oracle.database.criticality
+        value: "low"
+        action: upsert
+      # Business context for legacy instance
+      - key: business.unit.legacy
+        value: "operations"
+        action: upsert
+      - key: cost.center.legacy
+        value: "CC-OPERATIONS-003"
+        action: upsert
+      - key: team.owner.legacy
+        value: "legacy-systems-team"
+        action: upsert
+      - key: application.name
+        value: "legacy-reporting"
+        action: upsert
 
 exporters:
   debug:
@@ -499,15 +1683,56 @@ service:
     logs:
       level: debug
   pipelines:
+    # Application traces from FastAPI
     traces:
       receivers: [otlp]
-      processors: [resourcedetection, resource, batch]
+      processors: [resourcedetection, resource/common, batch]
       exporters: [debug, otlphttp/observe]
-    metrics:
-      receivers: [hostmetrics, sqlquery]
-      processors: [resourcedetection, resource, batch]
+    
+    # Host metrics (docker_stats commented out due to permission issues)
+    metrics/host:
+      receivers: [hostmetrics]
+      processors: [resourcedetection, resource/common, batch]
       exporters: [prometheus, otlphttp/observe]
-    logs:
-      receivers: [sqlquery]
-      processors: [resourcedetection, resource, batch]
+    
+    # Oracle process-specific host metrics
+    metrics/oracle_host_processes:
+      receivers: [hostmetrics/oracle_processes]
+      processors: [resourcedetection, resource/common, batch]
+      exporters: [prometheus, otlphttp/observe]
+    
+    # Primary Oracle database metrics
+    metrics/oracle_primary:
+      receivers: [sqlquery/oracle_primary]
+      processors: [resourcedetection, resource/common, resource/oracle_primary, batch]
+      exporters: [prometheus, otlphttp/observe]
+    
+    # Secondary Oracle database metrics
+    metrics/oracle_secondary:
+      receivers: [sqlquery/oracle_secondary]
+      processors: [resourcedetection, resource/common, resource/oracle_secondary, batch]
+      exporters: [prometheus, otlphttp/observe]
+    
+    # Primary Oracle database logs
+    logs/oracle_primary:
+      receivers: [sqlquery/oracle_primary]
+      processors: [resourcedetection, resource/common, resource/oracle_primary, batch]
+      exporters: [debug, otlphttp/observe]
+    
+    # Secondary Oracle database logs
+    logs/oracle_secondary:
+      receivers: [sqlquery/oracle_secondary]
+      processors: [resourcedetection, resource/common, resource/oracle_secondary, batch]
+      exporters: [debug, otlphttp/observe]
+    
+    # Legacy Oracle database metrics
+    metrics/oracle_legacy:
+      receivers: [sqlquery/oracle_legacy]
+      processors: [resourcedetection, resource/common, resource/oracle_legacy, batch]
+      exporters: [prometheus, otlphttp/observe]
+    
+    # Legacy Oracle database logs
+    logs/oracle_legacy:
+      receivers: [sqlquery/oracle_legacy]
+      processors: [resourcedetection, resource/common, resource/oracle_legacy, batch]
       exporters: [debug, otlphttp/observe]

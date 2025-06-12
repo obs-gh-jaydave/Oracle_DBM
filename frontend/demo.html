@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Demo - Oracle OTEL Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .nav-menu {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .nav-link {
+            padding: 12px 24px;
+            background: #007cba;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .nav-link:hover {
+            background-color: #005a87;
+        }
+        .nav-link.active {
+            background-color: #005a87;
+        }
+        .demo-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        .demo-section h2 {
+            color: #444;
+            margin-top: 0;
+        }
+        button {
+            background-color: #007cba;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #005a87;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Live Demo - Interactive Testing</h1>
+        
+        <nav class="nav-menu">
+            <a href="/" class="nav-link">Overview</a>
+            <a href="/sync.html" class="nav-link">Synchronous</a>
+            <a href="/async.html" class="nav-link">Asynchronous</a>
+            <a href="/bundler.html" class="nav-link">Bundler</a>
+            <a href="/demo.html" class="nav-link active">Live Demo</a>
+        </nav>
+
+        <div class="demo-section">
+            <h2>Interactive Demo - BRUM → APM → DBM Flow</h2>
+            <p>Test various frontend interactions to generate observability data with proper session tracking:</p>
+            
+            <h3>User Interactions</h3>
+            <button onclick="simulatePageView()">Simulate Page View</button>
+            <button onclick="simulateUserClick()">Simulate User Click</button>
+            <button onclick="simulateFormSubmit()">Simulate Form Submit</button>
+            <button onclick="simulateError()">Trigger Error</button>
+            
+            <h3>Oracle Database API Calls (Triggers SQL + Explain Plans)</h3>
+            <button onclick="makeOracleApiCall('/api/employees')">Get All Employees (FULL scan)</button>
+            <button onclick="makeOracleApiCall('/api/employees/high-salary')">High Salary Filter (INDEX scan)</button>
+            <button onclick="makeOracleApiCall('/api/analytics/salary-stats')">Salary Analytics (GROUP BY)</button>
+            <button onclick="makeOraclePostCall('/api/employees', {})">Add New Employee (INSERT)</button>
+            <button onclick="makeOracleApiCall('/api/complex-query')">Complex Join Query</button>
+            <button onclick="makeOracleApiCall('/api/slow-query')">Slow Query (Performance Test)</button>
+            
+            <h3>Session Debugging</h3>
+            <button onclick="debugCurrentSession()">Debug Current Session</button>
+            <button onclick="checkSessionPersistence()">Check Session Persistence</button>
+            
+            <div id="demo-output" class="status" style="margin-top: 20px; display: none;"></div>
+        </div>
+
+        <div class="demo-section">
+            <h2>🔍 Session Information</h2>
+            <div id="session-info" class="status success"></div>
+        </div>
+    </div>
+
+    <script>
+        function showOutput(message, isError = false) {
+            const output = document.getElementById('demo-output');
+            output.style.display = 'block';
+            output.className = 'status ' + (isError ? 'error' : 'success');
+            output.textContent = message;
+            
+            setTimeout(() => {
+                output.style.display = 'none';
+            }, 5000);
+        }
+
+        function getSessionId() {
+            if (!window.elasticApm) return { sessionId: null, sessionMethod: 'rum_not_available' };
+            
+            let sessionId = null;
+            let sessionMethod = 'none';
+            
+            // Try standard RUM SDK session methods only
+            if (typeof elasticApm.getSessionId === 'function') {
+                sessionId = elasticApm.getSessionId();
+                sessionMethod = 'getSessionId()';
+            } else if (elasticApm._agent && elasticApm._agent.sessionManager) {
+                sessionId = elasticApm._agent.sessionManager.current?.id || null;
+                sessionMethod = '_agent.sessionManager';
+            } else if (elasticApm._agent && elasticApm._agent._config) {
+                // Try agent config
+                sessionId = elasticApm._agent._config.sessionId || null;
+                sessionMethod = '_agent._config.sessionId';
+            }
+            
+            // If RUM SDK doesn't provide session, let it be null - no hardcoded fallbacks
+            return { sessionId, sessionMethod };
+        }
+
+        function debugCurrentSession() {
+            const session = getSessionId();
+            const currentTransaction = window.elasticApm ? elasticApm.getCurrentTransaction() : null;
+            
+            console.log('Current Session Debug:', {
+                ...session,
+                currentTransaction: currentTransaction ? {
+                    id: currentTransaction.id,
+                    type: currentTransaction.type,
+                    name: currentTransaction.name
+                } : null,
+                timestamp: new Date().toISOString()
+            });
+            
+            showOutput(`Session ID: ${session.sessionId || 'Not Available'} (Method: ${session.sessionMethod})`);
+        }
+
+        function checkSessionPersistence() {
+            const session = getSessionId();
+            
+            // Start a test transaction
+            if (window.elasticApm) {
+                const transaction = elasticApm.startTransaction('session-persistence-test', 'user-interaction');
+                if (transaction) {
+                    transaction.addLabels({
+                        session_id: session.sessionId,
+                        test_type: 'session_persistence',
+                        page_name: 'demo'
+                    });
+                    
+                    setTimeout(() => {
+                        const sessionAfter = getSessionId();
+                        transaction.addLabels({
+                            session_id_after: sessionAfter.sessionId,
+                            session_persisted: session.sessionId === sessionAfter.sessionId
+                        });
+                        transaction.end();
+                        
+                        showOutput(`Session Persistence: ${session.sessionId === sessionAfter.sessionId ? 'MAINTAINED' : 'LOST'}`);
+                    }, 100);
+                }
+            }
+        }
+
+        function simulatePageView() {
+            const session = getSessionId();
+            if (window.elasticApm) {
+                const transaction = elasticApm.startTransaction('simulate-page-view', 'user-interaction');
+                if (transaction) {
+                    const labels = {
+                        user_action: 'page_view_simulation',
+                        page_name: 'demo'
+                    };
+                    
+                    // Only add session if RUM SDK provides one
+                    if (session.sessionId) {
+                        labels.session_id = session.sessionId;
+                    }
+                    
+                    transaction.addLabels(labels);
+                    transaction.end();
+                }
+            }
+            showOutput('Page view simulation - RUM data sent to Observe');
+        }
+
+        function simulateUserClick() {
+            const session = getSessionId();
+            if (window.elasticApm) {
+                const transaction = elasticApm.startTransaction('simulate-user-click', 'user-interaction');
+                if (transaction) {
+                    const labels = {
+                        user_action: 'click_simulation',
+                        page_name: 'demo'
+                    };
+                    
+                    // Only add session if RUM SDK provides one
+                    if (session.sessionId) {
+                        labels.session_id = session.sessionId;
+                    }
+                    
+                    transaction.addLabels(labels);
+                    transaction.end();
+                }
+            }
+            showOutput('User click simulation - RUM data sent to Observe');
+        }
+
+        function simulateFormSubmit() {
+            const session = getSessionId();
+            if (window.elasticApm) {
+                const transaction = elasticApm.startTransaction('simulate-form-submit', 'user-interaction');
+                if (transaction) {
+                    const labels = {
+                        user_action: 'form_submission',
+                        page_name: 'demo'
+                    };
+                    
+                    // Only add session if RUM SDK provides one
+                    if (session.sessionId) {
+                        labels.session_id = session.sessionId;
+                    }
+                    
+                    transaction.addLabels(labels);
+                    transaction.end();
+                }
+            }
+            showOutput('Form submission simulation - RUM data sent to Observe');
+        }
+
+        function simulateError() {
+            const session = getSessionId();
+            if (window.elasticApm) {
+                const transaction = elasticApm.startTransaction('simulate-error', 'user-interaction');
+                if (transaction) {
+                    const labels = {
+                        user_action: 'error_simulation',
+                        page_name: 'demo',
+                        error_type: 'simulated'
+                    };
+                    
+                    // Only add session if RUM SDK provides one
+                    if (session.sessionId) {
+                        labels.session_id = session.sessionId;
+                    }
+                    
+                    transaction.addLabels(labels);
+                    transaction.end();
+                }
+            }
+            showOutput('Error simulation - RUM data sent to Observe');
+        }
+
+        function makeOracleApiCall(endpoint) {
+            const correlationId = 'obs-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            const userAction = endpoint.split('/').pop();
+            const session = getSessionId();
+            
+            console.log('Starting Oracle API call:', {
+                endpoint: endpoint,
+                correlationId: correlationId,
+                sessionId: session.sessionId,
+                sessionMethod: session.sessionMethod
+            });
+            
+            const transaction = window.elasticApm ? elasticApm.startTransaction(`oracle-${userAction}`, 'user-interaction') : null;
+            if (transaction) {
+                const labels = {
+                    correlation_id: correlationId,
+                    endpoint: endpoint,
+                    user_action: userAction,
+                    page_name: 'demo',
+                    transaction_type: 'api_call'
+                };
+                
+                // Only add session_id if RUM SDK provides one - no hardcoded values
+                if (session.sessionId) {
+                    labels.session_id = session.sessionId;
+                    labels.session_method = session.sessionMethod;
+                }
+                
+                transaction.addLabels(labels);
+            }
+            
+            const apiUrl = `http://localhost:8000${endpoint}`;
+            
+            fetch(apiUrl, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (transaction) {
+                        const sessionAfter = getSessionId();
+                        transaction.addLabels({
+                            query_type: data.query_type,
+                            explain_plan_hint: data.explain_plan_hint,
+                            record_count: data.count,
+                            success: true,
+                            session_id_after: sessionAfter.sessionId,
+                            session_persisted: session.sessionId === sessionAfter.sessionId
+                        });
+                        transaction.end();
+                    }
+                    
+                    let message = `Oracle Query: ${data.query_type}`;
+                    if (data.count !== undefined) message += ` (${data.count} records)`;
+                    if (data.explain_plan_hint) message += `\\nPlan: ${data.explain_plan_hint}`;
+                    message += `\\nSession: ${session.sessionId}`;
+                    
+                    showOutput(message);
+                })
+                .catch(error => {
+                    if (transaction) {
+                        transaction.addLabels({
+                            error: error.message,
+                            success: false
+                        });
+                        transaction.end();
+                    }
+                    showOutput(`Oracle API Error: ${error.message}`, true);
+                });
+        }
+
+        function makeOraclePostCall(endpoint, data) {
+            const apiUrl = `http://localhost:8000${endpoint}`;
+            const session = getSessionId();
+            
+            fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data)
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(result => {
+                    let message = `Oracle INSERT: ${result.query_type}`;
+                    if (result.employee) {
+                        message += `\\n👤 Created: ${result.employee.first_name} ${result.employee.last_name} (ID: ${result.employee.employee_id})`;
+                    }
+                    if (result.explain_plan_hint) message += `\\nPlan: ${result.explain_plan_hint}`;
+                    message += `\\nSession: ${session.sessionId}`;
+                    
+                    showOutput(message);
+                })
+                .catch(error => {
+                    showOutput(`Oracle POST Error: ${error.message}`, true);
+                });
+        }
+
+        // Initialize page
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Demo page loaded - Testing native RUM SDK session tracking');
+        });
+    </script>
+
+    <!-- Observe RUM SDK Initialization -->
+    <script src="https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js" crossorigin></script>
+    <script>
+      elasticApm.init({
+            environment: '${OBSERVE_RUM_ENVIRONMENT}',
+            serviceName: '${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrlPrefix: '?environment=${OBSERVE_RUM_ENVIRONMENT}&serviceName=${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrl: 'https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v1/http/rum',
+            breakdownMetrics: true,
+            distributedTracingOrigins: ['http://localhost:8000'],
+            distributedTracingHeaderName: 'elastic-apm-traceparent',
+            propagateTracestate: true,
+            instrumentFetch: true,
+            instrumentXHR: true,
+            captureHeaders: true,
+            logLevel: 'debug',
+            apiVersion: 2,
+            apmRequest({ xhr }) {
+                xhr.setRequestHeader('Authorization', 'Bearer ${OBSERVE_RUM_BEARER_TOKEN}')
+                return true
+            }
+      })
+      console.log('Observe RUM SDK initialized - Demo Page');
+      
+      // Diagnostic logging to understand RUM SDK structure
+      setTimeout(() => {
+        if (window.elasticApm) {
+          console.log('RUM SDK Available Methods:', Object.getOwnPropertyNames(elasticApm).filter(name => typeof elasticApm[name] === 'function'));
+          console.log('RUM SDK Agent Structure:', elasticApm._agent ? Object.keys(elasticApm._agent) : 'No _agent property');
+          
+          // Check for session support without hardcoded fallbacks
+          const session = getSessionId();
+          
+          console.log('Demo Page Session Debug:', {
+            sessionId: session.sessionId,
+            sessionMethod: session.sessionMethod,
+            pageType: 'demo',
+            rumSdkVersion: elasticApm.version || 'unknown',
+            timestamp: new Date().toISOString()
+          });
+          
+          // Log session availability without storing hardcoded values
+          if (session.sessionId) {
+            console.log('RUM SDK session available via:', session.sessionMethod);
+          } else {
+            console.log('RUM SDK session not available - this may be expected for this SDK version/configuration');
+          }
+          
+          // Update session info display
+          const sessionInfo = document.getElementById('session-info');
+          if (sessionInfo) {
+            sessionInfo.innerHTML = `
+              <strong>Session Status:</strong> ${session.sessionId ? 'Active' : 'Not Available'}<br/>
+              <strong>Session ID:</strong> ${session.sessionId || 'N/A'}<br/>
+              <strong>Method:</strong> ${session.sessionMethod}<br/>
+              <strong>Page:</strong> Demo (Multi-Page App)<br/>
+              <strong>Timestamp:</strong> ${new Date().toISOString()}
+            `;
+          }
+          
+          // Start page load transaction with session
+          const pageTransaction = elasticApm.startTransaction('demo-page-load', 'page-load');
+          if (pageTransaction) {
+            pageTransaction.addLabels({
+              page_name: 'demo',
+              session_id: session.sessionId,
+              session_method: session.sessionMethod,
+              page_type: 'interactive_demo',
+              multi_page_app: true
+            });
+            
+            // Add session to transaction context for later use
+            if (session.sessionId) {
+              pageTransaction.addLabels({
+                custom_session_id: session.sessionId,
+                session_source: session.sessionMethod,
+                session_created_at: new Date().toISOString()
+              });
+            }
+            
+            pageTransaction.end();
+          }
+        }
+      }, 1000);
+    </script>
+</body>
+</html>

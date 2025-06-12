@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synchronous Implementation - Oracle OTEL Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .nav-menu {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .nav-link {
+            padding: 12px 24px;
+            background: #007cba;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .nav-link:hover {
+            background-color: #005a87;
+        }
+        .nav-link.active {
+            background-color: #005a87;
+        }
+        .demo-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        .demo-section h2 {
+            color: #444;
+            margin-top: 0;
+        }
+        .code-block {
+            background: #f8f8f8;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Synchronous / Blocking Mode</h1>
+        
+        <nav class="nav-menu">
+            <a href="/" class="nav-link">Overview</a>
+            <a href="/sync.html" class="nav-link active">Synchronous</a>
+            <a href="/async.html" class="nav-link">Asynchronous</a>
+            <a href="/bundler.html" class="nav-link">Bundler</a>
+            <a href="/demo.html" class="nav-link">Live Demo</a>
+        </nav>
+
+        <div class="demo-section">
+            <h2>Synchronous / Blocking Mode</h2>
+            <p>Load the bundle synchronously and initialize immediately:</p>
+            <div class="code-block">
+&lt;script src="https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js" crossorigin&gt;&lt;/script&gt;
+&lt;script&gt;
+  elasticApm.init({
+        environment: '&lt;YOUR_ENVIRONMENT&gt;',
+        serviceName: '&lt;YOUR_SERVICE_NAME&gt;',
+        serverUrlPrefix: '?environment=&lt;YOUR_ENVIRONMENT&gt;&serviceName=&lt;YOUR_SERVICE_NAME&gt;',
+        serverUrl: 'https://&lt;YOUR_TENANT_ID&gt;.collect.observe-staging.com/v1/http/rum',
+        breakdownMetrics: true,
+        distributedTracingOrigins: ['*'],
+        distributedTracingHeaderName: 'elastic-apm-traceparent',
+        propagateTracestate: true,
+        logLevel: 'error',
+        session: true,
+        sessionSampleRate: 1.0,
+        apiVersion: 2,
+        apmRequest({ xhr }) {
+            xhr.setRequestHeader('Authorization', 'Bearer &lt;YOUR_RUM_BEARER_TOKEN&gt;')
+            return true
+        }
+  })
+&lt;/script&gt;
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>✅ Benefits of Synchronous Loading</h2>
+            <ul>
+                <li><strong>Immediate Initialization</strong> - RUM tracking starts right away</li>
+                <li><strong>Guaranteed Session Creation</strong> - Page load events captured from the start</li>
+                <li><strong>Simple Implementation</strong> - Straightforward script tag approach</li>
+                <li><strong>Reliable Page Tracking</strong> - Works well with multi-page applications</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Observe RUM SDK Initialization -->
+    <script src="https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js" crossorigin></script>
+    <script>
+      elasticApm.init({
+            environment: '${OBSERVE_RUM_ENVIRONMENT}',
+            serviceName: '${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrlPrefix: '?environment=${OBSERVE_RUM_ENVIRONMENT}&serviceName=${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrl: 'https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v1/http/rum',
+            breakdownMetrics: true,
+            distributedTracingOrigins: ['http://localhost:8000'],
+            distributedTracingHeaderName: 'elastic-apm-traceparent',
+            propagateTracestate: true,
+            instrumentFetch: true,
+            instrumentXHR: true,
+            captureHeaders: true,
+            logLevel: 'debug',
+            session: true,
+            sessionSampleRate: 1.0,
+            sessionTimeout: 30 * 60 * 1000,
+            capturePageLoadSpans: true,
+            captureInteractions: true,
+            apiVersion: 2,
+            apmRequest({ xhr }) {
+                xhr.setRequestHeader('Authorization', 'Bearer ${OBSERVE_RUM_BEARER_TOKEN}')
+                return true
+            }
+      })
+      console.log('Observe RUM SDK initialized - Sync Page');
+      
+      setTimeout(() => {
+        if (window.elasticApm) {
+          let sessionId = null;
+          if (typeof elasticApm.getSessionId === 'function') {
+            sessionId = elasticApm.getSessionId();
+          } else if (elasticApm._agent && elasticApm._agent.sessionManager) {
+            sessionId = elasticApm._agent.sessionManager.current?.id || null;
+          }
+          
+          console.log('Sync Page Session:', sessionId);
+          
+          const pageTransaction = elasticApm.startTransaction('sync-page-load', 'page-load');
+          if (pageTransaction) {
+            pageTransaction.addLabels({
+              page_name: 'sync',
+              session_id: sessionId,
+              implementation_type: 'synchronous'
+            });
+            pageTransaction.end();
+          }
+        }
+      }, 1000);
+    </script>
+</body>
+</html>
