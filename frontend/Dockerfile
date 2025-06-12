@@ -1,7 +1,7 @@
 FROM nginx:alpine
 
-# Copy the clean HTML file as template
-COPY clean.html /tmp/clean.html.template
+# Copy all HTML files as templates
+COPY *.html /tmp/
 
 # Copy custom nginx configuration
 COPY nginx.conf /etc/nginx/nginx.conf

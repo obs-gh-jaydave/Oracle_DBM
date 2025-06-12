@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle OTEL Demo - Frontend Observability</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .nav-menu {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .nav-link {
+            padding: 12px 24px;
+            background: #007cba;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .nav-link:hover {
+            background-color: #005a87;
+        }
+        .nav-link.active {
+            background-color: #005a87;
+        }
+        .demo-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        .demo-section h2 {
+            color: #444;
+            margin-top: 0;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Oracle Database & Frontend Observability Demo</h1>
+        
+        <nav class="nav-menu">
+            <a href="/" class="nav-link active">Overview</a>
+            <a href="/sync.html" class="nav-link">Synchronous</a>
+            <a href="/async.html" class="nav-link">Asynchronous</a>
+            <a href="/bundler.html" class="nav-link">Bundler</a>
+            <a href="/demo.html" class="nav-link">Live Demo</a>
+        </nav>
+        
+        <div class="demo-section">
+            <h2>🎯 Frontend Observability Demo</h2>
+            <p>This demo showcases Real User Monitoring (RUM) integration with various implementation methods using proper multi-page navigation for session tracking.</p>
+            <div id="rum-status" class="status success">
+                RUM Agent Ready - Multi-Page Application for Proper Session Tracking
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>🔍 Architecture: BRUM → APM → DBM</h2>
+            <div style="background: #f8f9fa; border: 2px solid #dee2e6; border-radius: 8px; padding: 20px; margin: 20px 0;">
+                <h3 style="margin-top: 0; text-align: center; color: #495057;">End-to-End Correlation Flow</h3>
+                <div style="font-family: monospace; font-size: 14px; line-height: 1.8; text-align: center;">
+                    <div style="color: #007cba; font-weight: bold;">👆 User Page Navigation</div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #e3f2fd; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>BRUM (Frontend RUM)</strong><br/>
+                        <small>Page loads trigger session creation: session-{id}</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #e8f5e8; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>APM (FastAPI Backend)</strong><br/>
+                        <small>Receives trace context, processes business logic</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #fff3e0; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>DBM (Oracle Database)</strong><br/>
+                        <small>Executes SQL with embedded correlation</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #fce4ec; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>OTEL Collector</strong><br/>
+                        <small>Captures explain plans + correlation</small>
+                    </div>
+                    <div style="margin: 5px;">↓</div>
+                    <div style="background: #f3e5f5; padding: 8px; border-radius: 4px; margin: 5px 0;">
+                        <strong>Observe Platform</strong><br/>
+                        <small>Dashboards linking page navigation → database</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>📚 Integration Methods</h2>
+            <p>Choose from different RUM SDK integration approaches:</p>
+            <ul>
+                <li><strong><a href="/sync.html">Synchronous</a></strong> - Direct script tag loading</li>
+                <li><strong><a href="/async.html">Asynchronous</a></strong> - Non-blocking script loading</li>
+                <li><strong><a href="/bundler.html">Bundler</a></strong> - NPM package integration</li>
+                <li><strong><a href="/demo.html">Live Demo</a></strong> - Interactive testing with Oracle API calls</li>
+            </ul>
+        </div>
+
+        <div class="demo-section">
+            <h2>🔧 Session Tracking Improvements</h2>
+            <p><strong>Multi-Page Application Benefits:</strong></p>
+            <ul>
+                <li>✅ <strong>Proper Page Load Events</strong> - Each navigation triggers RUM session initialization</li>
+                <li>✅ <strong>Session Persistence</strong> - Sessions maintained across page navigation</li>
+                <li>✅ <strong>Better Analytics</strong> - Traditional page-view tracking for better insights</li>
+                <li>✅ <strong>SEO Friendly</strong> - Search engine optimization with proper page structure</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Observe RUM SDK Initialization -->
+    <script src="https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js" crossorigin></script>
+    <script>
+      elasticApm.init({
+            environment: '${OBSERVE_RUM_ENVIRONMENT}',
+            serviceName: '${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrlPrefix: '?environment=${OBSERVE_RUM_ENVIRONMENT}&serviceName=${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrl: 'https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v1/http/rum',
+            breakdownMetrics: true,
+            distributedTracingOrigins: ['http://localhost:8000'],
+            distributedTracingHeaderName: 'elastic-apm-traceparent',
+            propagateTracestate: true,
+            instrumentFetch: true,
+            instrumentXHR: true,
+            captureHeaders: true,
+            logLevel: 'debug',
+            session: true,
+            sessionSampleRate: 1.0,
+            sessionTimeout: 30 * 60 * 1000,
+            capturePageLoadSpans: true,
+            captureInteractions: true,
+            apiVersion: 2,
+            apmRequest({ xhr }) {
+                xhr.setRequestHeader('Authorization', 'Bearer ${OBSERVE_RUM_BEARER_TOKEN}')
+                return true
+            }
+      })
+      console.log('Observe RUM SDK initialized - Index Page');
+      
+      // Page load transaction with proper session
+      setTimeout(() => {
+        if (window.elasticApm) {
+          // This should now properly create a session due to page load
+          let sessionId = null;
+          let sessionMethod = 'none';
+          
+          if (typeof elasticApm.getSessionId === 'function') {
+            sessionId = elasticApm.getSessionId();
+            sessionMethod = 'getSessionId()';
+          } else if (elasticApm._agent && elasticApm._agent.sessionManager) {
+            sessionId = elasticApm._agent.sessionManager.current?.id || null;
+            sessionMethod = '_agent.sessionManager';
+          }
+          
+          console.log('Index Page Session Debug:', {
+            sessionId: sessionId,
+            sessionMethod: sessionMethod,
+            pageType: 'index',
+            timestamp: new Date().toISOString()
+          });
+          
+          // Start page load transaction
+          const pageTransaction = elasticApm.startTransaction('index-page-load', 'page-load');
+          if (pageTransaction) {
+            pageTransaction.addLabels({
+              page_name: 'index',
+              session_id: sessionId,
+              page_type: 'overview'
+            });
+            pageTransaction.end();
+          }
+        }
+      }, 1000);
+    </script>
+</body>
+</html>

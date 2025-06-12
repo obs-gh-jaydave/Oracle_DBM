@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bundler Implementation - Oracle OTEL Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .nav-menu {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .nav-link {
+            padding: 12px 24px;
+            background: #007cba;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .nav-link:hover {
+            background-color: #005a87;
+        }
+        .nav-link.active {
+            background-color: #005a87;
+        }
+        .demo-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        .demo-section h2 {
+            color: #444;
+            margin-top: 0;
+        }
+        .code-block {
+            background: #f8f8f8;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Using Bundlers (npm/webpack/etc.)</h1>
+        
+        <nav class="nav-menu">
+            <a href="/" class="nav-link">Overview</a>
+            <a href="/sync.html" class="nav-link">Synchronous</a>
+            <a href="/async.html" class="nav-link">Asynchronous</a>
+            <a href="/bundler.html" class="nav-link active">Bundler</a>
+            <a href="/demo.html" class="nav-link">Live Demo</a>
+        </nav>
+
+        <div class="demo-section">
+            <h2>Using Bundlers (npm/webpack/etc.)</h2>
+            <p>Install and import the RUM SDK as an npm package:</p>
+            <div class="code-block">
+# Install the dependency
+npm install @elastic/apm-rum --save
+            </div>
+            <div class="code-block">
+// Initialize in your application
+import { init as initApm } from '@elastic/apm-rum';
+
+initApm({
+  environment: '&lt;YOUR_ENVIRONMENT&gt;',
+  serviceName: '&lt;YOUR_SERVICE_NAME&gt;',
+  serverUrlPrefix: '?environment=&lt;YOUR_ENVIRONMENT&gt;&serviceName=&lt;YOUR_SERVICE_NAME&gt;',
+  serverUrl: 'https://&lt;YOUR_TENANT_ID&gt;.collect.observe-staging.com/v1/http/rum',
+  breakdownMetrics: true,
+  distributedTracingOrigins: ['*'],
+  distributedTracingHeaderName: 'elastic-apm-traceparent',
+  propagateTracestate: true,
+  logLevel: 'error',
+  session: true,
+  sessionSampleRate: 1.0,
+  apiVersion: 2,
+  apmRequest({ xhr }) {
+    xhr.setRequestHeader('Authorization', 'Bearer &lt;YOUR_RUM_BEARER_TOKEN&gt;')
+    return true
+  }
+});
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>✅ Benefits of Bundler Integration</h2>
+            <ul>
+                <li><strong>Version Control</strong> - Explicit dependency management</li>
+                <li><strong>Build Optimization</strong> - Bundled with your application code</li>
+                <li><strong>Development Workflow</strong> - Works with modern JavaScript frameworks</li>
+                <li><strong>TypeScript Support</strong> - Full type definitions available</li>
+                <li><strong>Session Reliability</strong> - Consistent session tracking in SPAs and multi-page apps</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Observe RUM SDK Initialization -->
+    <script src="https://assets.observeinc.com/dist/bundles/apm-rum.umd.min.js" crossorigin></script>
+    <script>
+      elasticApm.init({
+            environment: '${OBSERVE_RUM_ENVIRONMENT}',
+            serviceName: '${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrlPrefix: '?environment=${OBSERVE_RUM_ENVIRONMENT}&serviceName=${OBSERVE_RUM_SERVICE_NAME}',
+            serverUrl: 'https://${OBSERVE_TENANT_ID}.${OBSERVE_STAGING_DOMAIN}/v1/http/rum',
+            breakdownMetrics: true,
+            distributedTracingOrigins: ['http://localhost:8000'],
+            distributedTracingHeaderName: 'elastic-apm-traceparent',
+            propagateTracestate: true,
+            instrumentFetch: true,
+            instrumentXHR: true,
+            captureHeaders: true,
+            logLevel: 'debug',
+            session: true,
+            sessionSampleRate: 1.0,
+            sessionTimeout: 30 * 60 * 1000,
+            capturePageLoadSpans: true,
+            captureInteractions: true,
+            apiVersion: 2,
+            apmRequest({ xhr }) {
+                xhr.setRequestHeader('Authorization', 'Bearer ${OBSERVE_RUM_BEARER_TOKEN}')
+                return true
+            }
+      })
+      console.log('Observe RUM SDK initialized - Bundler Page');
+      
+      setTimeout(() => {
+        if (window.elasticApm) {
+          let sessionId = null;
+          if (typeof elasticApm.getSessionId === 'function') {
+            sessionId = elasticApm.getSessionId();
+          } else if (elasticApm._agent && elasticApm._agent.sessionManager) {
+            sessionId = elasticApm._agent.sessionManager.current?.id || null;
+          }
+          
+          console.log('Bundler Page Session:', sessionId);
+          
+          const pageTransaction = elasticApm.startTransaction('bundler-page-load', 'page-load');
+          if (pageTransaction) {
+            pageTransaction.addLabels({
+              page_name: 'bundler',
+              session_id: sessionId,
+              implementation_type: 'bundler'
+            });
+            pageTransaction.end();
+          }
+        }
+      }, 1000);
+    </script>
+</body>
+</html>

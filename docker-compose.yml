@@ -1,16 +1,79 @@
 services:
-  oracle-db:
+  # Primary Oracle Database Instance
+  oracle-db-primary:
     image: gvenzl/oracle-xe:latest
-    container_name: oracle-db
+    container_name: oracle-db-primary
     platform: linux/amd64
     restart: unless-stopped
     environment:
-      - ORACLE_PASSWORD=${ORACLE_PASSWORD}
+      - ORACLE_PASSWORD=${ORACLE_PASSWORD_PRIMARY}
+      - ORACLE_DATABASE=XEPDB1
     ports:
       - "1521:1521"
     volumes:
       - ./oracle/setup.sql:/container-entrypoint-initdb.d/00_setup.sql
       - ./oracle/create-schema.sql:/container-entrypoint-initdb.d/01_create-schema.sql
+      - oracle_primary_data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/${ORACLE_PASSWORD_PRIMARY}@localhost:1521/xepdb1 || exit 1"]
+      interval: 60s
+      timeout: 45s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+    labels:
+      - "oracle.instance.role=primary"
+      - "oracle.instance.tier=production"
+
+  # Secondary Oracle Database Instance  
+  oracle-db-secondary:
+    image: gvenzl/oracle-xe:latest
+    container_name: oracle-db-secondary
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      - ORACLE_PASSWORD=${ORACLE_PASSWORD_SECONDARY}
+      - ORACLE_DATABASE=XEPDB1
+    ports:
+      - "1522:1521"
+    volumes:
+      - ./oracle/setup.sql:/container-entrypoint-initdb.d/00_setup.sql
+      - ./oracle/create-schema.sql:/container-entrypoint-initdb.d/01_create-schema.sql
+      - oracle_secondary_data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/${ORACLE_PASSWORD_SECONDARY}@localhost:1521/xepdb1 || exit 1"]
+      interval: 60s
+      timeout: 45s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+    labels:
+      - "oracle.instance.role=secondary"
+      - "oracle.instance.tier=development"
+
+  # Backward compatibility - alias to primary
+  oracle-db:
+    image: gvenzl/oracle-xe:latest
+    container_name: oracle-db-legacy
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      - ORACLE_PASSWORD=${ORACLE_PASSWORD}
+      - ORACLE_DATABASE=XEPDB1
+    ports:
+      - "1523:1521"
+    volumes:
+      - ./oracle/setup.sql:/container-entrypoint-initdb.d/00_setup.sql
+      - ./oracle/create-schema.sql:/container-entrypoint-initdb.d/01_create-schema.sql
+      - oracle_legacy_data:/opt/oracle/oradata
     healthcheck:
       test: ["CMD-SHELL", "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/${ORACLE_PASSWORD}@localhost:1521/xepdb1 || exit 1"]
       interval: 60s
@@ -22,6 +85,9 @@ services:
         limits:
           memory: 4G
           cpus: '2.0'
+    labels:
+      - "oracle.instance.role=legacy"
+      - "oracle.instance.tier=testing"
 
 
   otel-collector:
@@ -38,9 +104,31 @@ services:
       - OBSERVE_TENANT_ID=${OBSERVE_TENANT_ID}
       - OBSERVE_STAGING_DOMAIN=${OBSERVE_STAGING_DOMAIN}
       - OBSERVE_BACKEND_BEARER_TOKEN=${OBSERVE_BACKEND_BEARER_TOKEN}
-      - ORACLE_PASSWORD=${ORACLE_PASSWORD}
       
-      # Oracle Instance Identification (Production-Ready Attributes)
+      # Primary Oracle Database Configuration
+      - ORACLE_PASSWORD_PRIMARY=${ORACLE_PASSWORD_PRIMARY}
+      - ORACLE_INSTANCE_NAME_PRIMARY=${ORACLE_INSTANCE_NAME_PRIMARY}
+      - ORACLE_DATABASE_NAME_PRIMARY=${ORACLE_DATABASE_NAME_PRIMARY}
+      - ORACLE_HOST_PRIMARY=${ORACLE_HOST_PRIMARY}
+      - ORACLE_PORT_PRIMARY=${ORACLE_PORT_PRIMARY}
+      - ORACLE_VERSION_PRIMARY=${ORACLE_VERSION_PRIMARY}
+      - ORACLE_EDITION_PRIMARY=${ORACLE_EDITION_PRIMARY}
+      - SERVICE_NAME_PRIMARY=${SERVICE_NAME_PRIMARY}
+      - SERVICE_VERSION_PRIMARY=${SERVICE_VERSION_PRIMARY}
+      
+      # Secondary Oracle Database Configuration  
+      - ORACLE_PASSWORD_SECONDARY=${ORACLE_PASSWORD_SECONDARY}
+      - ORACLE_INSTANCE_NAME_SECONDARY=${ORACLE_INSTANCE_NAME_SECONDARY}
+      - ORACLE_DATABASE_NAME_SECONDARY=${ORACLE_DATABASE_NAME_SECONDARY}
+      - ORACLE_HOST_SECONDARY=${ORACLE_HOST_SECONDARY}
+      - ORACLE_PORT_SECONDARY=${ORACLE_PORT_SECONDARY}
+      - ORACLE_VERSION_SECONDARY=${ORACLE_VERSION_SECONDARY}
+      - ORACLE_EDITION_SECONDARY=${ORACLE_EDITION_SECONDARY}
+      - SERVICE_NAME_SECONDARY=${SERVICE_NAME_SECONDARY}
+      - SERVICE_VERSION_SECONDARY=${SERVICE_VERSION_SECONDARY}
+      
+      # Legacy Oracle Configuration (backward compatibility)
+      - ORACLE_PASSWORD=${ORACLE_PASSWORD}
       - ORACLE_INSTANCE_NAME=${ORACLE_INSTANCE_NAME}
       - ORACLE_DATABASE_NAME=${ORACLE_DATABASE_NAME}
       - ORACLE_HOST=${ORACLE_HOST}
@@ -59,13 +147,30 @@ services:
       # Deployment Tracking
       - DEPLOYMENT_ID=${DEPLOYMENT_ID}
       - DEPLOYMENT_TIMESTAMP=${DEPLOYMENT_TIMESTAMP}
+      
+      # Business Unit and Organizational Tagging
+      - BUSINESS_UNIT=${BUSINESS_UNIT}
+      - COST_CENTER=${COST_CENTER}
+      - TEAM_OWNER=${TEAM_OWNER}
+      - APPLICATION_PORTFOLIO=${APPLICATION_PORTFOLIO}
+      
+      # Oracle Monitoring User Configuration
+      - ORACLE_MONITOR_USER=${ORACLE_MONITOR_USER}
+      - ORACLE_MONITOR_PASSWORD=${ORACLE_MONITOR_PASSWORD}
+      - ORACLE_MONITOR_TARGET_USER=${ORACLE_MONITOR_TARGET_USER}
     depends_on:
+      oracle-db-primary:
+        condition: service_healthy
+      oracle-db-secondary:
+        condition: service_healthy
       oracle-db:
         condition: service_healthy
     volumes:
       - ./otel-collector/collector-config.yaml:/etc/otel-collector-config.yaml:ro
       # Cache OTEL data temporarily
       - otel_cache:/tmp/otel
+      # Docker socket for container metrics
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     command: ["--config=/etc/otel-collector-config.yaml"]
     ports:
       - "9464:9464"
@@ -84,21 +189,22 @@ services:
         - python:3.10-slim
     restart: unless-stopped
     depends_on:
-      oracle-db:
+      oracle-db-primary:
+        condition: service_healthy
+      oracle-db-secondary:
         condition: service_healthy
       api:
         condition: service_started
-      frontend:
-        condition: service_started
     environment:
-      # API and Frontend endpoints for RUM simulation
+      # API endpoint for database operations
       API_BASE_URL: "http://api:8000"
-      FRONTEND_BASE_URL: "http://frontend-observability:80"
       
       # Load generation configuration
-      LOADGEN_MIN_SLEEP: "3"
-      LOADGEN_MAX_SLEEP: "10"
-      ENABLE_FRONTEND_SIMULATION: "true"
+      LOADGEN_MIN_SLEEP: "2"
+      LOADGEN_MAX_SLEEP: "8"
+      ENABLE_MULTI_INSTANCE_LOAD: "true"
+      PRIMARY_DB_WEIGHT: "0.7"   # 70% of load on primary
+      SECONDARY_DB_WEIGHT: "0.3" # 30% of load on secondary
     deploy:
       resources:
         limits:
@@ -113,14 +219,14 @@ services:
     container_name: oracle-api
     restart: unless-stopped
     depends_on:
-      oracle-db:
+      oracle-db-primary:
         condition: service_healthy
     environment:
-      ORACLE_HOST: oracle-db
+      ORACLE_HOST: oracle-db-primary
       ORACLE_PORT: "1521"
       ORACLE_SID: "xepdb1"
       ORACLE_USER: testuser
-      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD_PRIMARY}
     ports:
       - "8000:8000"
     deploy:
@@ -145,7 +251,7 @@ services:
     ports:
       - "8081:80"
     depends_on:
-      oracle-db:
+      oracle-db-primary:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -158,4 +264,10 @@ services:
 # Persistent volumes to avoid reinitialization
 volumes:
   otel_cache:
+    driver: local
+  oracle_primary_data:
+    driver: local
+  oracle_secondary_data:
+    driver: local
+  oracle_legacy_data:
     driver: local

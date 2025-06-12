@@ -357,6 +357,31 @@ initApm({
         }
 
         function simulateUserClick() {
+            console.log('Before simulateUserClick:');
+            const sessionBefore = debugSessionManagement();
+            
+            // Start a RUM transaction for user click simulation
+            if (window.elasticApm) {
+                const transaction = elasticApm.startTransaction('simulate-user-click', 'user-interaction');
+                if (transaction) {
+                    transaction.addLabels({
+                        user_action: 'simulate-click',
+                        session_id_at_start: sessionBefore,
+                        simulation_type: 'user_click'
+                    });
+                    
+                    setTimeout(() => {
+                        console.log('After simulateUserClick transaction:');
+                        const sessionAfter = debugSessionManagement();
+                        transaction.addLabels({
+                            session_id_at_end: sessionAfter,
+                            session_maintained: sessionBefore === sessionAfter
+                        });
+                        transaction.end();
+                    }, 100);
+                }
+            }
+            
             showOutput('User click simulation - RUM data would be sent to Observe');
         }
 
@@ -389,14 +414,27 @@ initApm({
             const correlationId = 'obs-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
             const userAction = endpoint.split('/').pop(); // Extract action name
             
+            // Get current session ID for session persistence debugging
+            const currentSessionId = debugSessionManagement();
+            console.log('Starting transaction with session ID:', currentSessionId);
+            
             // Start RUM transaction if available
-            const transaction = window.elasticApm ? elasticApm.startTransaction(`oracle-${userAction}`, 'user-action') : null;
+            const transaction = window.elasticApm ? elasticApm.startTransaction(`oracle-${userAction}`, 'user-interaction') : null;
             if (transaction) {
+                // Set session context on transaction
+                if (currentSessionId) {
+                    transaction.addLabels({
+                        session_id: currentSessionId,
+                        session_persistent: true
+                    });
+                }
+                
                 transaction.addLabels({ 
                     correlation_id: correlationId,
                     endpoint: endpoint,
                     user_action: userAction,
-                    observability_layer: 'frontend_rum'
+                    observability_layer: 'frontend_rum',
+                    transaction_type: 'user-interaction'
                 });
                 
                 // Add correlation_id as custom labels data in payload
@@ -405,7 +443,8 @@ initApm({
                     custom_trace_id: correlationId,
                     custom_user_action: userAction,
                     custom_api_endpoint: endpoint,
-                    custom_frontend_timestamp: Date.now()
+                    custom_frontend_timestamp: Date.now(),
+                    custom_session_id: currentSessionId
                 });
             }
             
@@ -428,12 +467,25 @@ initApm({
                 })
                 .then(data => {
                     if (transaction) {
+                        // Check session persistence after API call
+                        const endSessionId = debugSessionManagement();
+                        const sessionPersisted = currentSessionId === endSessionId;
+                        
+                        console.log('Transaction completion session check:', {
+                            startSessionId: currentSessionId,
+                            endSessionId: endSessionId,
+                            sessionPersisted: sessionPersisted
+                        });
+                        
                         transaction.addLabels({ 
                             query_type: data.query_type,
                             explain_plan_hint: data.explain_plan_hint,
                             record_count: data.count,
                             success: true,
-                            correlation_id: correlationId
+                            correlation_id: correlationId,
+                            session_check_start: currentSessionId,
+                            session_check_end: endSessionId,
+                            session_persisted: sessionPersisted
                         });
                         
                         // Update custom labels with response data
@@ -442,7 +494,8 @@ initApm({
                             custom_query_type: data.query_type,
                             custom_record_count: data.count,
                             custom_success: true,
-                            custom_backend_timestamp: Date.now()
+                            custom_backend_timestamp: Date.now(),
+                            custom_session_persistence: sessionPersisted
                         });
                         
                         transaction.end();
@@ -531,9 +584,65 @@ initApm({
             output.innerHTML = '<div class="status success">Oracle Database: Running<br/>OTEL Collector: Collecting metrics<br/>Prometheus: Exporting at :9464<br/>API: Available at http://localhost:8000</div>';
         }
 
+        // Session management debugging
+        function debugSessionManagement() {
+            if (!window.elasticApm) {
+                console.log('BRUM SDK not available for session debugging');
+                return null;
+            }
+            
+            // Try different session access methods
+            let sessionId = null;
+            let sessionMethod = 'none';
+            
+            if (typeof elasticApm.getSessionId === 'function') {
+                sessionId = elasticApm.getSessionId();
+                sessionMethod = 'getSessionId()';
+            } else if (elasticApm._agent && elasticApm._agent.sessionManager) {
+                sessionId = elasticApm._agent.sessionManager.current?.id || null;
+                sessionMethod = '_agent.sessionManager';
+            } else if (elasticApm._agent && elasticApm._agent._config && elasticApm._agent._config.active) {
+                // Try to access session from agent config
+                sessionId = elasticApm._agent._sessionId || null;
+                sessionMethod = '_agent._sessionId';
+            }
+            
+            const currentTransaction = elasticApm.getCurrentTransaction();
+            if (!sessionId && currentTransaction && currentTransaction.sessionId) {
+                sessionId = currentTransaction.sessionId;
+                sessionMethod = 'transaction.sessionId';
+            }
+            
+            console.log('Session Management Debug:', {
+                sessionId: sessionId,
+                sessionMethod: sessionMethod,
+                currentTransaction: currentTransaction ? {
+                    id: currentTransaction.id,
+                    type: currentTransaction.type,
+                    name: currentTransaction.name,
+                    sessionId: currentTransaction.sessionId || 'N/A'
+                } : null,
+                sdkConfig: {
+                    session: true,
+                    sessionSampleRate: 1.0,
+                    sessionTimeout: '30 minutes',
+                    captureInteractions: true
+                },
+                timestamp: new Date().toISOString()
+            });
+            
+            return sessionId;
+        }
+
         // Initialize page
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Frontend Observability Demo loaded - No PII exposed');
+            
+            // Initial session debug after page load
+            setTimeout(() => {
+                console.log('Initial page load session state:');
+                debugSessionManagement();
+            }, 2000);
         });
     </script>
 
@@ -554,6 +663,10 @@ initApm({
             captureHeaders: true,
             logLevel: 'debug',
             session: true,
+            sessionSampleRate: 1.0,
+            sessionTimeout: 30 * 60 * 1000,
+            capturePageLoadSpans: true,
+            captureInteractions: true,
             apiVersion: 2,
             apmRequest({ xhr }) {
                 xhr.setRequestHeader('Authorization', 'Bearer ${OBSERVE_RUM_BEARER_TOKEN}')
@@ -561,6 +674,74 @@ initApm({
             }
       })
       console.log('Observe RUM SDK initialized with environment: ${OBSERVE_RUM_ENVIRONMENT}');
+      
+      // Force session initialization
+      if (window.elasticApm) {
+        try {
+          // Try to force session creation
+          if (typeof elasticApm.startSession === 'function') {
+            elasticApm.startSession();
+            console.log('Session started explicitly');
+          } else if (elasticApm._agent && elasticApm._agent.sessionManager) {
+            // Force session manager to create session
+            if (typeof elasticApm._agent.sessionManager.start === 'function') {
+              elasticApm._agent.sessionManager.start();
+              console.log('Session manager started explicitly');
+            }
+          }
+        } catch (e) {
+          console.log('Session initialization attempt failed:', e.message);
+        }
+      }
+      
+      // Debug session information
+      setTimeout(() => {
+        if (window.elasticApm) {
+          const currentTransaction = elasticApm.getCurrentTransaction();
+          
+          // Try different session access methods
+          let sessionId = null;
+          let sessionMethod = 'none';
+          
+          if (typeof elasticApm.getSessionId === 'function') {
+            sessionId = elasticApm.getSessionId();
+            sessionMethod = 'getSessionId()';
+          } else if (elasticApm._agent && elasticApm._agent.sessionManager) {
+            sessionId = elasticApm._agent.sessionManager.current?.id || null;
+            sessionMethod = '_agent.sessionManager';
+          } else if (currentTransaction && currentTransaction.sessionId) {
+            sessionId = currentTransaction.sessionId;
+            sessionMethod = 'transaction.sessionId';
+          }
+          
+          console.log('BRUM Session Debug:', {
+            sessionId: sessionId,
+            sessionMethod: sessionMethod,
+            currentTransaction: currentTransaction,
+            rumSdkAvailable: !!window.elasticApm,
+            availableMethods: Object.getOwnPropertyNames(elasticApm).filter(name => typeof elasticApm[name] === 'function'),
+            agentProperties: elasticApm._agent ? Object.keys(elasticApm._agent) : 'No _agent property',
+            config: {
+              session: true,
+              sessionSampleRate: 1.0,
+              environment: '${OBSERVE_RUM_ENVIRONMENT}'
+            }
+          });
+          
+          // Try to get session information from transaction if available
+          if (currentTransaction) {
+            console.log('Current Transaction Details:', {
+              id: currentTransaction.id || 'N/A',
+              traceId: currentTransaction.traceId || 'N/A',
+              type: currentTransaction.type || 'N/A',
+              name: currentTransaction.name || 'N/A',
+              sessionId: currentTransaction.sessionId || 'N/A'
+            });
+          }
+        } else {
+          console.log('BRUM SDK not available');
+        }
+      }, 1000);
     </script>
 </body>
 </html>
